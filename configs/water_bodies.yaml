@@ -1,0 +1,358 @@
+# ==============================================================================
+# Единый справочник озёр и настроек подсистемы сбора данных (Часть 1)
+# ==============================================================================
+# Принцип конфигурации (ADR-05 в DECISIONS.md):
+# Чтобы добавить новое озеро (в том числе вживую на защите/опроцентовке),
+# достаточно добавить один блок в список `water_bodies` ниже и запустить ETL:
+#   python -m src.etl.osm_geometry --lake <id>
+# Менять Python-код для новых водоёмов не требуется.
+# ==============================================================================
+
+pipeline:
+  # Период выгрузки данных:
+  # 2018-2019 гг. — для сверки и калибровки оптического переводчика с реальными
+  #                 лабораторными таблицами БГУ (Нарочь, Мястро, Баторино);
+  # 2020-2026 гг. — основной рабочий диапазон мониторинга и прогноза (+10 дней).
+  start_date: "2018-01-01"
+  end_date: "2026-11-15"
+
+  # Параметры спутниковой обработки (Sentinel-2 L2A, AWS Earth Search STAC)
+  stac_api_url: "https://earth-search.aws.element84.com/v1/search"
+  stac_collection: "sentinel-2-l2a"
+  max_scene_cloud_cover_pct: 40.0
+  shore_buffer_m: 25.0          # Отступ внутрь от берега и островов (убираем камыш/отмель)
+  min_valid_water_pixels: 20    # Минимум чистых водных пикселей (20м сетка, SCL == 6)
+  min_water_coverage_pct: 30.0  # Минимум доли чистой воды внутри буферного контура (%)
+
+  # Пороги санитарной тревоги по хлорофиллу-а (СанПиН РБ / ВОЗ)
+  default_thresholds:
+    attention_ug_l: 15.0        # Уровень внимания (мезотрофно-эвтрофный переход)
+    bloom_ug_l: 25.0            # Опасное цветение (эвтрофный / гипертрофный риск)
+
+# ------------------------------------------------------------------------------
+# Список водоёмов-кандидатов (Нарочанская группа + Мядельская группа)
+# Примечание: на Этапе 2 все 15 озёр проходят живой тест по реальным снимкам
+# Sentinel-2 за лето 2026 г. Озёра с < 20 чистых пикселей воды после буфера
+# отключаются (enabled: false) с фиксацией точной причины.
+# ------------------------------------------------------------------------------
+water_bodies:
+  # ==================== НАРОЧАНСКАЯ ГРУППА ====================
+  # Морфометрия проверена по справочнику «Озёра Беларуси» / Блакітная кніга Беларусі
+  # и материалам Нарочанской биостанции БГУ.
+  - id: naroch
+    name_ru: "Озеро Нарочь"
+    name_be: "Возера Нарач"
+    group: "naroch"
+    basin: "р. Нарочанка (бассейн Вилии / Немана)"
+    osm_type: "relation"
+    osm_id: 107227
+    area_km2: 79.6
+    max_depth_m: 24.8
+    mean_depth_m: 8.9
+    volume_mln_m3: 710.0
+    watershed_km2: 199.0
+    has_lab_data: true
+    enabled: true
+    ecological_context:
+      protected_area: "ГПУ «Национальный парк Нарочанский» (ООПТ)"
+      chemical_treatment_allowed: false
+      stratification_type: "dimictic_deep"
+      cascade_inflow_from: ["myastro"]
+      cascade_outflow_to: "р. Нарочанка"
+    morphometry_source: "Озёра Беларуси / Блакітная кніга Беларусі; Бюллетени БГУ"
+    notes: "Крупнейшее озеро Беларуси; олиго-мезотрофное, эталон чистой воды с 40-летним рядом БГУ."
+
+  - id: myastro
+    name_ru: "Озеро Мястро"
+    name_be: "Возера Мястра"
+    group: "naroch"
+    basin: "р. Нарочанка (каскад Баторино → Мястро → Нарочь)"
+    osm_type: "relation"
+    osm_id: 2952257
+    area_km2: 13.1
+    max_depth_m: 11.3
+    mean_depth_m: 5.4
+    volume_mln_m3: 70.1
+    watershed_km2: 130.0
+    has_lab_data: true
+    enabled: true
+    ecological_context:
+      protected_area: "ГПУ «Национальный парк Нарочанский» (ООПТ)"
+      chemical_treatment_allowed: false
+      stratification_type: "weakly_stratified"
+      cascade_inflow_from: ["batorino"]
+      cascade_outflow_to: "naroch"
+    morphometry_source: "Озёра Беларуси / Блакітная кніга Беларусі; Бюллетени БГУ"
+    notes: "Среднее звено Нарочанского каскада; мезотрофное, принимает сток из оз. Баторино."
+
+  - id: batorino
+    name_ru: "Озеро Баторино"
+    name_be: "Возера Баторына"
+    group: "naroch"
+    basin: "р. Нарочанка (верхнее звено каскада → р. Дробня → Мястро)"
+    osm_type: "relation"
+    osm_id: 2952256
+    area_km2: 6.25
+    max_depth_m: 5.5
+    mean_depth_m: 2.4
+    volume_mln_m3: 15.03
+    watershed_km2: 92.4
+    has_lab_data: true
+    enabled: true
+    ecological_context:
+      protected_area: "ГПУ «Национальный парк Нарочанский» (ООПТ)"
+      chemical_treatment_allowed: false
+      stratification_type: "polymictic_shallow"
+      cascade_inflow_from: []
+      cascade_outflow_to: "myastro"
+    morphometry_source: "Озёра Беларуси / Блакітная кніга Беларусі (V = S × H_ср = 15,03 млн м³)"
+    notes: "Мелководное эвтрофное озеро с высоким удельным водосбором (14,8×); наиболее склонно к цветению."
+
+  # ==================== МЯДЕЛЬСКАЯ ГРУППА ====================
+  # Морфометрия и OSM ID взяты из проверенного справочника Мядельской группы (ИГИСИТ).
+  - id: myadel
+    name_ru: "Озеро Мядель"
+    name_be: "Возера Мядзел"
+    group: "myadel"
+    basin: "р. Мяделка (Западная Двина)"
+    osm_type: "relation"
+    osm_id: 1101350
+    area_km2: 16.2
+    max_depth_m: 24.6
+    mean_depth_m: 6.3
+    volume_mln_m3: 102.0
+    watershed_km2: 89.2
+    has_lab_data: false
+    enabled: true
+    ecological_context:
+      protected_area: "ГПУ «Национальный парк Нарочанский» (ООПТ)"
+      chemical_treatment_allowed: false
+      stratification_type: "dimictic_deep"
+      cascade_inflow_from: ["volchino"]
+      cascade_outflow_to: "р. Мяделка"
+    morphometry_source: "Справочник Мядельской группы озёр (Озёра Беларуси)"
+    notes: "Крупнейший водоём Мядельской группы; мезотрофный с чертами олиготрофности, 8 островов."
+
+  - id: kuzmichi
+    name_ru: "Озеро Кузьмичи"
+    name_be: "Возера Кузьмічы"
+    group: "myadel"
+    basin: "р. Страча (Неман)"
+    osm_type: "relation"
+    osm_id: 18854360
+    area_km2: 0.69
+    max_depth_m: 3.4
+    mean_depth_m: 2.4
+    volume_mln_m3: 1.65
+    watershed_km2: 11.0
+    has_lab_data: false
+    enabled: true
+    ecological_context:
+      protected_area: "ГПУ «Национальный парк Нарочанский» (ООПТ)"
+      chemical_treatment_allowed: false
+      stratification_type: "polymictic_shallow"
+      cascade_inflow_from: []
+      cascade_outflow_to: "р. Страча"
+    morphometry_source: "Справочник Мядельской группы озёр (Озёра Беларуси)"
+    notes: "Мелководное озеро с огромным удельным водосбором (15,9×), илистым дном и низкой прозрачностью."
+
+  - id: volchino
+    name_ru: "Озеро Волчино"
+    name_be: "Возера Воўчын"
+    group: "myadel"
+    basin: "р. Мяделка (Западная Двина)"
+    osm_type: "way"
+    osm_id: 25194393
+    area_km2: 0.53
+    max_depth_m: 32.9
+    mean_depth_m: 14.8
+    volume_mln_m3: 7.87
+    watershed_km2: 3.68
+    has_lab_data: false
+    enabled: true
+    ecological_context:
+      protected_area: "ГПУ «Национальный парк Нарочанский» (ООПТ)"
+      chemical_treatment_allowed: false
+      stratification_type: "dimictic_deep"
+      cascade_inflow_from: []
+      cascade_outflow_to: "myadel"
+    morphometry_source: "Справочник Мядельской группы озёр (Озёра Беларуси)"
+    notes: "Самое глубокое озеро Мядельской группы; выраженная температурная стратификация."
+
+  - id: lotviny
+    name_ru: "Озеро Лотвины"
+    name_be: "Возера Лотвіны"
+    group: "myadel"
+    basin: "р. Мяделка (Западная Двина)"
+    osm_type: "way"
+    osm_id: 25197551
+    area_km2: 0.42
+    max_depth_m: 15.1
+    mean_depth_m: 6.7
+    volume_mln_m3: 2.81
+    watershed_km2: 1.4
+    has_lab_data: false
+    enabled: true
+    ecological_context:
+      protected_area: "ГПУ «Национальный парк Нарочанский» (ООПТ)"
+      chemical_treatment_allowed: false
+      stratification_type: "dimictic_deep"
+      cascade_inflow_from: ["rossokhi"]
+      cascade_outflow_to: "р. Мяделка"
+    morphometry_source: "Справочник Мядельской группы озёр (Озёра Беларуси)"
+    notes: "Мезотрофное проточное озеро; принимает сток со стороны оз. Россохи и Ходосы."
+
+  - id: rudakovo
+    name_ru: "Озеро Рудаково"
+    name_be: "Возера Рудакова"
+    group: "myadel"
+    basin: "Бессточное (локальный водосбор р. Мяделки)"
+    osm_type: "way"
+    osm_id: 25195420
+    area_km2: 0.24
+    max_depth_m: 28.6
+    mean_depth_m: 11.3
+    volume_mln_m3: 2.85
+    watershed_km2: 1.15
+    has_lab_data: false
+    enabled: true
+    ecological_context:
+      protected_area: "ГПУ «Национальный парк Нарочанский» (ООПТ)"
+      chemical_treatment_allowed: false
+      stratification_type: "dimictic_deep"
+      cascade_inflow_from: []
+      cascade_outflow_to: "бессточное"
+    morphometry_source: "Справочник Мядельской группы озёр (Озёра Беларуси)"
+    notes: "Глубокая чашеобразная котловина, высокая прозрачность (≥5 м)."
+
+  - id: rossokhi
+    name_ru: "Озеро Россохи"
+    name_be: "Возера Расохі"
+    group: "myadel"
+    basin: "р. Мяделка (Западная Двина)"
+    osm_type: "way"
+    osm_id: 25194897
+    area_km2: 0.18
+    max_depth_m: 11.2
+    mean_depth_m: 3.4
+    volume_mln_m3: 0.34
+    watershed_km2: 0.75
+    has_lab_data: false
+    enabled: false
+    exclusion_reason: "Резервное валидное озеро (316 чистых пикс., 93,3% воды, B08/B03=0,59) — оставлено для живой демонстрации добавления нового водоёма в систему на защите."
+    ecological_context:
+      protected_area: "ГПУ «Национальный парк Нарочанский» (ООПТ)"
+      chemical_treatment_allowed: false
+      stratification_type: "weakly_stratified"
+      cascade_inflow_from: []
+      cascade_outflow_to: "lotviny"
+    morphometry_source: "Справочник Мядельской группы озёр (Озёра Беларуси)"
+    notes: "Малое лесное озеро в цепочке стока к Лотвинам и Мяделю; проходит все критерии Sentinel-2."
+
+  - id: knyagininskoe
+    name_ru: "Озеро Княгининское"
+    name_be: "Княгінінскае возера"
+    group: "myadel"
+    basin: "р. Мяделка (Западная Двина)"
+    osm_type: "relation"
+    osm_id: 18988042
+    area_km2: 0.12
+    max_depth_m: 6.2
+    mean_depth_m: 3.0
+    volume_mln_m3: 0.36
+    watershed_km2: 0.5
+    has_lab_data: false
+    enabled: false
+    exclusion_reason: "Отсеяно на Этапе 2: зарастание и сильный эффект соседства (засветка ИК B08/B03 = 1,02, доля чистой воды 72,4%)."
+    morphometry_source: "Справочник Мядельской группы озёр (Озёра Беларуси)"
+    notes: "Небольшой водоём (пограничный размер для спутникового сенсора 20 м)."
+
+  - id: khodosy
+    name_ru: "Озеро Ходосы"
+    name_be: "Возера Хадасы"
+    group: "myadel"
+    basin: "р. Мяделка (Западная Двина)"
+    osm_type: "way"
+    osm_id: 153992350
+    area_km2: 0.105
+    max_depth_m: 9.3
+    mean_depth_m: 3.5
+    volume_mln_m3: 0.36
+    watershed_km2: 0.9
+    has_lab_data: false
+    enabled: false
+    exclusion_reason: "Отсеяно на Этапе 2: низкая доля чистой воды внутри буфера (61,8% — около 38% прибрежной растительности/смешанных пикселей)."
+    morphometry_source: "Справочник Мядельской группы озёр (Озёра Беларуси)"
+    notes: "Малое озеро к северо-западу от Лотвин (пограничный размер для сенсора 20 м)."
+
+  - id: chertok
+    name_ru: "Озеро Черток"
+    name_be: "Возера Чарток"
+    group: "myadel"
+    basin: "р. Мяделка (Западная Двина)"
+    osm_type: "way"
+    osm_id: 25191847
+    area_km2: 0.06
+    max_depth_m: 2.6
+    mean_depth_m: 1.5
+    volume_mln_m3: 0.09
+    watershed_km2: 3.7
+    has_lab_data: false
+    enabled: false
+    exclusion_reason: "Отсеяно на Этапе 2: всего 66 пикс. (69,5% воды) и сильная ИК-засветка от леса/камыша (B08 = 0,0172, B08/B03 = 1,00)."
+    morphometry_source: "Справочник Мядельской группы озёр (Озёра Беларуси)"
+    notes: "Очень малое мелководное озеро (6 га)."
+
+  - id: telyakovskoe
+    name_ru: "Озеро Теляковское"
+    name_be: "Целякоўскае возера"
+    group: "myadel"
+    basin: "р. Мяделка (Западная Двина)"
+    osm_type: "way"
+    osm_id: 25189221
+    area_km2: 0.026
+    max_depth_m: 2.8
+    mean_depth_m: 1.5
+    volume_mln_m3: 0.039
+    watershed_km2: 0.55
+    has_lab_data: false
+    enabled: false
+    exclusion_reason: "Отсеяно на Этапе 2: недостаточно чистых водных пикселей (медиана 19 < 20, прошло 1/4 сцен)."
+    morphometry_source: "Справочник Мядельской группы озёр (Озёра Беларуси)"
+    notes: "Заболоченный водоём (2,6 га)."
+
+  - id: barsuki
+    name_ru: "Озеро Барсуки"
+    name_be: "Возера Барсукі"
+    group: "myadel"
+    basin: "р. Мяделка (Западная Двина)"
+    osm_type: "way"
+    osm_id: 118895433
+    area_km2: 0.02
+    max_depth_m: 3.0
+    mean_depth_m: 1.6
+    volume_mln_m3: 0.032
+    watershed_km2: 0.45
+    has_lab_data: false
+    enabled: false
+    exclusion_reason: "Отсеяно на Этапе 2: недостаточно чистых водных пикселей (медиана 16 < 20, прошло 0/4 сцен)."
+    morphometry_source: "Справочник Мядельской группы озёр (Озёра Беларуси)"
+    notes: "Малое лесо-болотное озеро (2 га)."
+
+  - id: repyakhovskoe
+    name_ru: "Озеро Репяховское"
+    name_be: "Возера Рапяхоўскае"
+    group: "myadel"
+    basin: "р. Мяделка (Западная Двина)"
+    osm_type: "way"
+    osm_id: 158985289
+    area_km2: 0.008
+    max_depth_m: 2.4
+    mean_depth_m: 1.3
+    volume_mln_m3: 0.01
+    watershed_km2: 0.32
+    has_lab_data: false
+    enabled: false
+    exclusion_reason: "Отсеяно на Этапе 2: 0 чистых водных пикселей после отступа -25м (прошло 0/4 сцен)."
+    morphometry_source: "Справочник Мядельской группы озёр (Озёра Беларуси)"
+    notes: "Самое малое озеро группы (0,8 га)."

@@ -1,0 +1,167 @@
+{
+  "generated_at_utc": "2026-11-23T11:10:19Z",
+  "date_range": {
+    "start": "2018-04-01",
+    "end": "2026-11-15"
+  },
+  "lakes_roster": {
+    "active_count": 8,
+    "active_ids": [
+      "naroch",
+      "myastro",
+      "batorino",
+      "myadel",
+      "kuzmichi",
+      "volchino",
+      "lotviny",
+      "rudakovo"
+    ],
+    "reserve_ids": [
+      "rossokhi"
+    ],
+    "excluded_lakes": [
+      {
+        "id": "knyagininskoe",
+        "area_km2": 0.12,
+        "reason": "Отсеяно на Этапе 2: зарастание и сильный эффект соседства (засветка ИК B08/B03 = 1,02, доля чистой воды 72,4%)."
+      },
+      {
+        "id": "khodosy",
+        "area_km2": 0.105,
+        "reason": "Отсеяно на Этапе 2: низкая доля чистой воды внутри буфера (61,8% — около 38% прибрежной растительности/смешанных пикселей)."
+      },
+      {
+        "id": "chertok",
+        "area_km2": 0.06,
+        "reason": "Отсеяно на Этапе 2: всего 66 пикс. (69,5% воды) и сильная ИК-засветка от леса/камыша (B08 = 0,0172, B08/B03 = 1,00)."
+      },
+      {
+        "id": "telyakovskoe",
+        "area_km2": 0.026,
+        "reason": "Отсеяно на Этапе 2: недостаточно чистых водных пикселей (медиана 19 < 20, прошло 1/4 сцен)."
+      },
+      {
+        "id": "barsuki",
+        "area_km2": 0.02,
+        "reason": "Отсеяно на Этапе 2: недостаточно чистых водных пикселей (медиана 16 < 20, прошло 0/4 сцен)."
+      },
+      {
+        "id": "repyakhovskoe",
+        "area_km2": 0.008,
+        "reason": "Отсеяно на Этапе 2: 0 чистых водных пикселей после отступа -25м (прошло 0/4 сцен)."
+      }
+    ]
+  },
+  "meteo_quality": {
+    "total_daily_rows": 25928,
+    "lakes_count": 8,
+    "date_min": "2018-01-01",
+    "date_max": "2026-11-15",
+    "missing_values_total": 0
+  },
+  "satellite_quality": {
+    "raw_scenes_input": 2224,
+    "haze_b11_rejected": 42,
+    "bounds_rejected": 0,
+    "clean_unique_day_scenes": 2129,
+    "glint_flagged_kept": 66,
+    "max_b11_haze_threshold": 0.06
+  },
+  "decadal_coverage_by_lake": {
+    "naroch": {
+      "total_valid_scenes": 284,
+      "median_valid_water_pixels": 189668,
+      "open_water_decades_total": 215,
+      "open_water_valid_decades": 144,
+      "open_water_valid_pct": 67.0,
+      "open_water_interpolated_1step": 27,
+      "open_water_cloudy_missing": 44,
+      "ice_cover_decades": 96
+    },
+    "myastro": {
+      "total_valid_scenes": 269,
+      "median_valid_water_pixels": 29562,
+      "open_water_decades_total": 215,
+      "open_water_valid_decades": 145,
+      "open_water_valid_pct": 67.4,
+      "open_water_interpolated_1step": 25,
+      "open_water_cloudy_missing": 45,
+      "ice_cover_decades": 96
+    },
+    "batorino": {
+      "total_valid_scenes": 269,
+      "median_valid_water_pixels": 12543,
+      "open_water_decades_total": 215,
+      "open_water_valid_decades": 144,
+      "open_water_valid_pct": 67.0,
+      "open_water_interpolated_1step": 24,
+      "open_water_cloudy_missing": 47,
+      "ice_cover_decades": 96
+    },
+    "myadel": {
+      "total_valid_scenes": 299,
+      "median_valid_water_pixels": 35198,
+      "open_water_decades_total": 215,
+      "open_water_valid_decades": 148,
+      "open_water_valid_pct": 68.8,
+      "open_water_interpolated_1step": 21,
+      "open_water_cloudy_missing": 46,
+      "ice_cover_decades": 96
+    },
+    "kuzmichi": {
+      "total_valid_scenes": 284,
+      "median_valid_water_pixels": 1282,
+      "open_water_decades_total": 215,
+      "open_water_valid_decades": 143,
+      "open_water_valid_pct": 66.5,
+      "open_water_interpolated_1step": 26,
+      "open_water_cloudy_missing": 46,
+      "ice_cover_decades": 96
+    },
+    "volchino": {
+      "total_valid_scenes": 284,
+      "median_valid_water_pixels": 1038,
+      "open_water_decades_total": 215,
+      "open_water_valid_decades": 145,
+      "open_water_valid_pct": 67.4,
+      "open_water_interpolated_1step": 25,
+      "open_water_cloudy_missing": 45,
+      "ice_cover_decades": 96
+    },
+    "lotviny": {
+      "total_valid_scenes": 288,
+      "median_valid_water_pixels": 786,
+      "open_water_decades_total": 215,
+      "open_water_valid_decades": 148,
+      "open_water_valid_pct": 68.8,
+      "open_water_interpolated_1step": 22,
+      "open_water_cloudy_missing": 45,
+      "ice_cover_decades": 96
+    },
+    "rudakovo": {
+      "total_valid_scenes": 247,
+      "median_valid_water_pixels": 412,
+      "open_water_decades_total": 215,
+      "open_water_valid_decades": 129,
+      "open_water_valid_pct": 60.0,
+      "open_water_interpolated_1step": 24,
+      "open_water_cloudy_missing": 62,
+      "ice_cover_decades": 96
+    }
+  },
+  "lab_and_gloria_summary": {
+    "bsu_2018_2019_samples": 36,
+    "gloria_total_clean_pairs": 5405,
+    "gloria_inland_lakes_pairs": 3368,
+    "bsu_2018_2019_sentinel2_matchup": {
+      "matched_samples": 36,
+      "total_lab_samples": 36,
+      "match_rate_pct": 100.0,
+      "spearman_b04_b02_vs_lab_chl_a": 0.788,
+      "spearman_b03_b02_vs_lab_chl_a": 0.733,
+      "spearman_b04_b02_vs_secchi": -0.798,
+      "spearman_ndci_mishra_vs_lab_chl_a": -0.249,
+      "mishra_mae_ug_l": 7.8
+    }
+  }
+}

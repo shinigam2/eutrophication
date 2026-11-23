@@ -1,0 +1,145 @@
+{
+  "generated_at_utc": "2026-11-23T11:10:19Z",
+  "schema_version": "1.0.0",
+  "active_lakes": [
+    "naroch",
+    "myastro",
+    "batorino",
+    "myadel",
+    "kuzmichi",
+    "volchino",
+    "lotviny",
+    "rudakovo"
+  ],
+  "satellite_mart": {
+    "parquet_path": "data/processed/features_satellite.parquet",
+    "csv_path": "data/processed/features_satellite.csv",
+    "total_valid_rows": 1146,
+    "trainable_rows_with_valid_next_10d_target": 828,
+    "date_min": "2018-04-11",
+    "date_max": "2026-11-11",
+    "meta_columns": [
+      "water_body_id",
+      "water_body_name",
+      "date",
+      "obs_status",
+      "valid_water_pixels",
+      "water_coverage_pct",
+      "scenes_in_decade",
+      "sun_glint_flag",
+      "last_scene_id",
+      "last_scene_date",
+      "is_trainable_target",
+      "target_date_next_10d"
+    ],
+    "optical_band_columns": [
+      "b02_blue",
+      "b03_green",
+      "b04_red",
+      "b05_rededge1",
+      "b06_rededge2",
+      "b08_nir",
+      "b11_swir1"
+    ],
+    "feature_columns": [
+      "month",
+      "day_of_year",
+      "sin_doy",
+      "cos_doy",
+      "area_km2",
+      "mean_depth_m",
+      "max_depth_m",
+      "watershed_ratio",
+      "b02_blue",
+      "b03_green",
+      "b04_red",
+      "b05_rededge1",
+      "b06_rededge2",
+      "b08_nir",
+      "b11_swir1",
+      "ndci_current",
+      "ndci_lag10d",
+      "ndci_growth_10d",
+      "ndti_current",
+      "b03_b02_ratio_current",
+      "b04_b02_ratio_current",
+      "b04_b02_ratio_lag10d",
+      "b04_b02_growth_10d",
+      "b05_b04_ratio_current",
+      "chl_a_est_current",
+      "chl_a_est_lag10d",
+      "tsi_current",
+      "temp_mean_7d",
+      "temp_mean_14d",
+      "temp_mean_21d",
+      "temp_max_7d",
+      "hot_days_14d",
+      "precip_sum_7d",
+      "precip_sum_14d",
+      "radiation_mean_7d",
+      "wind_mean_7d",
+      "calm_fraction_7d"
+    ],
+    "target_columns": [
+      "target_ndci_next_10d",
+      "target_b04_b02_next_10d",
+      "target_chl_a_est_next_10d",
+      "target_attention_risk_next_10d",
+      "target_bloom_risk_next_10d"
+    ],
+    "recommended_temporal_split": {
+      "train_years": [
+        2018,
+        2019,
+        2020,
+        2021,
+        2022,
+        2023,
+        2024
+      ],
+      "test_years": [
+        2025,
+        2026
+      ],
+      "note": "Разделение строго по годам без перемешивания; 2018–2019 также используются для валидации переводчика GLORIA по пробам БГУ."
+    },
+    "rows_per_lake": {
+      "batorino": 144,
+      "kuzmichi": 143,
+      "lotviny": 148,
+      "myadel": 148,
+      "myastro": 145,
+      "naroch": 144,
+      "rudakovo": 129,
+      "volchino": 145
+    },
+    "trainable_rows_per_lake": {
+      "batorino": 105,
+      "kuzmichi": 102,
+      "lotviny": 110,
+      "myadel": 112,
+      "myastro": 106,
+      "naroch": 103,
+      "rudakovo": 84,
+      "volchino": 106
+    }
+  },
+  "lab_mart": {
+    "parquet_path": "data/processed/features_lab.parquet",
+    "csv_path": "data/processed/features_lab.csv",
+    "total_rows": 36,
+    "lakes": [
+      "batorino",
+      "myastro",
+      "naroch"
+    ],
+    "date_min": "2018-05-15",
+    "date_max": "2019-10-15",
+    "matched_s2_rate_pct": 100.0,
+    "target_column": "chl_a_lab_ug_l"
+  },
+  "gloria_reference": {
+    "parquet_path": "data/interim/gloria_sentinel2_pairs.parquet",
+    "purpose": "Обучение 6-канального оптико-лабораторного переводчика (B02..B08 + NDCI/NDTI/отношения -> Chl-a мкг/л) в Части 2."
+  }
+}
