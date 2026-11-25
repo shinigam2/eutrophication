@@ -21,6 +21,7 @@ BASE_IRI = "https://shinigam2.github.io/eutrophication/"
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 DEFAULT_GRAPH = DATA_DIR / "knowledge_graph" / "graph.ttl"
 DEFAULT_GEOJSON = DATA_DIR / "reference" / "lakes.geojson"
+DEFAULT_PREDICTIONS = DATA_DIR / "processed" / "result.json"
 PREFIXES = f"""
 PREFIX eutro: <{BASE_IRI}>
 PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
@@ -183,6 +184,34 @@ WHERE {{
     return operation
 
 
+def forecast_import_operations(predictions_path):
+    source = json.loads(predictions_path.read_text(encoding="utf-8"))
+    predictions = source.get("predictions") if isinstance(source, dict) else None
+    if not isinstance(predictions, dict):
+        raise ValueError("ожидается объект predictions с записями по водоёмам")
+
+    operations = []
+    for key, prediction in predictions.items():
+        if not isinstance(prediction, dict):
+            raise ValueError(f"запись {key!r} должна быть объектом")
+        water_id = prediction.get("water_body_id")
+        raw_date = prediction.get("date")
+        raw_value = prediction.get("chl_a_pred_ug_l")
+        if not isinstance(water_id, str) or not water_id.strip():
+            raise ValueError(f"запись {key!r}: укажи water_body_id")
+        if not isinstance(raw_date, str):
+            raise ValueError(f"запись {key!r}: поле date должно содержать дату строкой")
+        if type(raw_value) not in (int, float):
+            raise ValueError(f"запись {key!r}: поле chl_a_pred_ug_l должно быть числом")
+        try:
+            period_start = parse_period_start(raw_date)
+            value = parse_concentration(str(raw_value))
+        except argparse.ArgumentTypeError as error:
+            raise ValueError(f"запись {key!r}: {error}") from error
+        operations.append(insert_record("forecast", water_id, period_start, value, name=None))
+    return operations
+
+
 def load_graph(graph_path):
     graph = Graph()
     if graph_path.exists():
@@ -259,15 +288,19 @@ def show_history(graph, water_body_id, *, endpoint=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("import-ttl", "sync-lakes", "forecast", "observe", "history"))
+    parser.add_argument("phase", choices=("import-ttl", "import-forecasts", "sync-lakes", "forecast", "observe", "history"))
     parser.add_argument("--graph", type=Path, help="путь к Turtle-файлу")
     parser.add_argument("--endpoint", help="адрес Oxigraph, например http://127.0.0.1:7878")
     parser.add_argument("--geojson", type=Path, help="файл контуров для команды sync-lakes")
+    parser.add_argument("--input", type=Path, help="JSON для import-forecasts (по умолчанию data/processed/result.json)")
     parser.add_argument("--water-body-id", help="ID из реестра водоёмов")
     parser.add_argument("--name", help="название водоёма при первой записи")
     parser.add_argument("--period-start", type=parse_period_start, help="начало целевой декады")
     parser.add_argument("--value", type=parse_concentration, help="концентрация хлорофилла-а в мкг/л")
     args = parser.parse_args()
+
+    if args.input is not None and args.phase != "import-forecasts":
+        parser.error("--input доступен только для import-forecasts")
 
     record_fields = (args.name, args.period_start, args.value)
     graph_path = (args.graph or DEFAULT_GRAPH).expanduser().resolve()
@@ -285,6 +318,21 @@ def main():
 
     if args.endpoint is not None and args.graph is not None:
         parser.error("выбери одно хранилище: --endpoint или --graph")
+
+    if args.phase == "import-forecasts":
+        if not args.endpoint:
+            parser.error("для import-forecasts укажи --endpoint")
+        if args.geojson is not None or args.water_body_id is not None or any(field is not None for field in record_fields):
+            parser.error("import-forecasts принимает только --endpoint и --input")
+        predictions_path = (args.input or DEFAULT_PREDICTIONS).expanduser().resolve()
+        try:
+            operations = forecast_import_operations(predictions_path)
+            if operations:
+                apply_updates(graph_path, args.endpoint, SEED_RULE, *operations, CREATE_ALERTS)
+        except (OSError, ValueError) as error:
+            parser.exit(1, f"Ошибка импорта прогнозов из {predictions_path}\n{error}\n")
+        print(f"Прогнозов обработано: {len(operations)}")
+        return
 
     if args.phase == "sync-lakes":
         if args.water_body_id is not None or any(field is not None for field in record_fields):
