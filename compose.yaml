@@ -42,6 +42,21 @@ services:
       - ./data:/app/data
     command: ["python", "-m", "src.etl.load_to_postgis"]
 
+  # Часть 4 (веб-ГИС и FastAPI: docker compose --profile api up --build api)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["api"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./configs:/app/configs
+      - ./data:/app/data
+      - ./frontend:/app/frontend
+      - ./src:/app/src
+    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
 volumes:
   graph_data:
   postgis_data:

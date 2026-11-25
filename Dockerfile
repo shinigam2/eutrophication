@@ -16,10 +16,11 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 RUN apt-get update && apt-get install -y --no-install-recommends libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Копируем исходный код и конфигурацию (папки data/ и configs/ также можно монтировать томом)
+# Копируем исходный код, панель и конфигурацию (папки data/ и configs/ также можно монтировать томом)
 COPY compose.yaml ./
 COPY configs ./configs
 COPY dags ./dags
+COPY frontend ./frontend
 COPY src ./src
 COPY tests ./tests
 
