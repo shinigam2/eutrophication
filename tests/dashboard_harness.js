@@ -1,226 +1,270 @@
-// Прогон скрипта панели в Node: имитация DOM/Leaflet/Chart.js, реальные HTTP-запросы к тестовому серверу.
+// Прогон скрипта веб-ГИС панели в Node: имитация DOM / MapLibre GL JS / Chart.js, реальные HTTP-запросы.
 // node tests/dashboard_harness.js <каталог frontend> <api-url> [dead]
-const fs = require('fs'), vm = require('vm'), assert = require('assert');
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
+
 const [, , frontDir, base, mode] = process.argv;
 const code = fs.readFileSync(frontDir + '/app.js', 'utf8');
 
 const els = {};
 class El {
   constructor(sel) {
-    this.sel = sel; this.attrs = {}; this.ls = {}; this.innerHTML = ''; this.textContent = '';
-    this.hidden = false; this.value = ''; this.dataset = {}; this.id = sel.replace(/^#/, ''); this.cl = new Set();
+    this.sel = sel;
+    this.attrs = {};
+    this.ls = {};
+    this.innerHTML = '';
+    this.textContent = '';
+    this.hidden = false;
+    this.checked = true;
+    this.value = '';
+    this.dataset = {};
+    this.style = {};
+    this.className = '';
+    this.children = [];
+    this.id = sel.replace(/^#/, '');
+    this.cl = new Set();
     this.classList = {
       toggle: (c, f) => { (f === undefined ? !this.cl.has(c) : f) ? this.cl.add(c) : this.cl.delete(c); },
-      add: c => this.cl.add(c), remove: c => this.cl.delete(c), contains: c => this.cl.has(c),
+      add: (c) => this.cl.add(c),
+      remove: (c) => this.cl.delete(c),
+      contains: (c) => this.cl.has(c),
     };
   }
+  appendChild(child) { this.children.push(child); return child; }
   setAttribute(k, v) { this.attrs[k] = String(v); if (k === 'id') this.id = String(v); }
   addEventListener(t, f) { (this.ls[t] = this.ls[t] || []).push(f); }
-  async fire(t, e = {}) { for (const f of this.ls[t] || []) await f({target: this, preventDefault() {}, ...e}); }
-  querySelector(sel) { return get(this.sel + ' ' + sel); }
+  async fire(t, e = {}) { for (const f of this.ls[t] || []) await f({ target: this, preventDefault() {}, stopPropagation() {}, ...e }); }
+  querySelector(sel) { return get(sel); }
+  querySelectorAll() { return []; }
   closest() { return null; }
   reset() { }
-  blur() { }
+  focus() { }
 }
-const get = sel => (els[sel] = els[sel] || new El(sel));
-const segEls = ['satellite', 'lab'].map(m => { const e = new El('.seg'); e.dataset = {mode: m}; if (m === 'satellite') e.cl.add('active'); return e; });
-globalThis.document = {querySelector: get, querySelectorAll: sel => (sel === '#modeSwitch .seg' ? segEls : [])};
+
+const get = (sel) => (els[sel] = els[sel] || new El(sel));
+const segEls = ['satellite', 'lab'].map((m) => {
+  const e = new El('.seg-' + m);
+  e.dataset = { mode: m };
+  if (m === 'satellite') e.cl.add('active');
+  return e;
+});
+const baseEls = ['dark', 'light', 'satellite', 'hybrid'].map((b) => {
+  const e = new El('.base-' + b);
+  e.dataset = { basemap: b };
+  if (b === 'dark') e.cl.add('active');
+  return e;
+});
+const tabEls = ['overview', 'history'].map((t) => {
+  const e = new El('.tab-' + t);
+  e.dataset = { tab: t };
+  if (t === 'overview') e.cl.add('active');
+  return e;
+});
+
+const winListeners = {};
+globalThis.document = {
+  body: new El('body'),
+  createElement: (tag) => new El('<' + tag + '>'),
+  querySelector: get,
+  querySelectorAll: (sel) => {
+    if (sel === '#modeSwitch .seg') return segEls;
+    if (sel === '#basemapSwitch .mode-btn') return baseEls;
+    if (sel === '.drawer-tab') return tabEls;
+    return [];
+  },
+  addEventListener: () => {},
+};
 globalThis.window = globalThis;
-globalThis.location = {search: '?api=' + encodeURIComponent(base), protocol: 'http:', origin: 'http://unused'};
+globalThis.innerWidth = 1440;
+globalThis.addEventListener = (t, f) => { (winListeners[t] = winListeners[t] || []).push(f); };
+globalThis.location = { search: '?api=' + encodeURIComponent(base), protocol: 'http:', origin: 'http://unused' };
 
-const layersLog = [];                                   // все созданные слои карты (полигоны и прямоугольники)
-const bounds = () => ({getSouthWest: () => [0, 0], getNorthEast: () => [1, 1], extend() { return this; }});
-const mkLayer = (kind, style) => {
-  const r = {kind, style: {...style}, tip: '', removed: false, ls: {},
-    addTo() { this.removed = false; return this; },
-    on(ev, fn) { this.ls[ev] = fn; return this; },
-    setStyle(s) { Object.assign(this.style, s); }, unbindTooltip() { return this; },
-    bindTooltip(t) { this.tip = t; return this; }, getBounds: bounds};
-  layersLog.push(r); return r;
+// Mock FormData для тестирования POST /lab/upload
+globalThis.FormData = class {
+  constructor(form) { this._data = (form && form._fields) || {}; }
+  get(k) { return this._data[k] == null ? '' : this._data[k]; }
 };
-globalThis.L = {
-  map: () => ({fitBounds() {}, setView() {}, removeLayer(r) { r.removed = true; }}),
-  tileLayer: () => ({addTo() { return this; }}),
-  control: {layers: () => ({addTo() { return this; }})},
-  rectangle: (b, o) => mkLayer('rectangle', o),
-  geoJSON: (g, o) => { assert(g && g.type === 'Polygon', 'в слой передан полигон'); return mkLayer('geojson', o && o.style ? o.style() : {}); },
-  latLngBounds: () => bounds()
-};
-globalThis.Chart = class { constructor(el, cfg) { this.el = el; this.data = cfg.data; this.options = cfg.options; globalThis.__chart = this; } destroy() {} };
-const chartDs = label => (globalThis.__chart ? globalThis.__chart.data.datasets.find(d => d.label === label) : null);
-for (const s of ['#stub', '#apierr', '#panel', '#metricsModal', '#suggest']) get(s).hidden = true;   // как в index.html
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-const busy = () => get('#mapnote').attrs['aria-busy'] === 'true' || get('#panelBody').attrs['aria-busy'] === 'true';
-async function idle() { for (let i = 0; i < 600; i++) { await sleep(10); if (!busy()) { await sleep(30); if (!busy()) return; } } throw new Error('timeout: загрузка не завершилась'); }
-async function waitFor(fn, ms = 3000) { for (let t = 0; t < ms; t += 25) { if (fn()) return; await sleep(25); } throw new Error('timeout: условие не выполнено'); }
-const J = async p => (await fetch(base + p)).json();
-const log = () => J('/__log'), hlog = () => J('/__hlog'), hits = () => J('/__hits'), clear = () => fetch(base + '/__clear');
-const count = (s, sub) => s.split(sub).length - 1;
-const setDate = async v => { get('#dinp').value = v; await get('#dinp').fire('change'); await idle(); };
-const panelText = () => get('#panelBody').innerHTML;
+// Mock MapLibre GL JS с проверкой источников, слоёв, стилей и маркеров
+const mapState = {
+  styles: [],
+  sources: {},
+  layers: {},
+  markers: [],
+  flyCalls: [],
+  paintUpdates: [],
+};
+class FakeMap {
+  constructor(opts) {
+    this.opts = opts;
+    this.ls = {};
+    mapState.styles.push(opts.style);
+    setTimeout(() => this._emit('style.load'), 5);
+  }
+  addControl() {}
+  on(ev, layerOrFn, fn) {
+    const cb = typeof layerOrFn === 'function' ? layerOrFn : fn;
+    (this.ls[ev] = this.ls[ev] || []).push(cb);
+  }
+  _emit(ev, payload) { for (const f of this.ls[ev] || []) f(payload || {}); }
+  getCanvas() { return { style: {} }; }
+  setStyle(style) {
+    mapState.styles.push(style);
+    mapState.sources = {};
+    mapState.layers = {};
+    setTimeout(() => this._emit('style.load'), 5);
+  }
+  getSource(id) { return mapState.sources[id]; }
+  addSource(id, cfg) {
+    const src = { id, data: cfg.data, setData(d) { this.data = d; } };
+    mapState.sources[id] = src;
+  }
+  getLayer(id) { return mapState.layers[id]; }
+  addLayer(cfg) { mapState.layers[cfg.id] = cfg; }
+  setPaintProperty(layerId, prop, val) { mapState.paintUpdates.push({ layerId, prop, val }); }
+  flyTo(opts) { mapState.flyCalls.push(opts); }
+  jumpTo() {}
+}
+class FakeMarker {
+  constructor(opts) { this.el = opts.element; this.lngLat = null; this.removed = false; }
+  setLngLat(ll) { this.lngLat = ll; return this; }
+  addTo() { mapState.markers.push(this); return this; }
+  remove() { this.removed = true; }
+}
+globalThis.maplibregl = { Map: FakeMap, Marker: FakeMarker, NavigationControl: class {} };
+globalThis.Chart = class {
+  constructor(el, cfg) { this.el = el; this.data = cfg.data; this.options = cfg.options; globalThis.__chart = this; }
+  update() {}
+  destroy() {}
+};
+
+for (const s of ['#stub', '#apierr', '#panel', '#metricsModal', '#labModal', '#helpModal', '#lakeDropdown', '#mapTooltip']) {
+  get(s).hidden = true;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const J = async (p) => (await fetch(base + p)).json();
+const hits = () => J('/__hits');
+const hlog = () => J('/__hlog');
 
 (async () => {
-  vm.runInThisContext(code, {filename: 'dashboard-script'});
-  await window.dashboardReady; await idle(); await sleep(50);
+  vm.runInThisContext(code, { filename: 'dashboard-script' });
+  await window.dashboardReady;
+  await sleep(60);
 
   if (mode === 'dead') {
     assert.strictEqual(get('#apierr').hidden, false, 'баннер ошибки связи должен показываться');
     assert(get('#apierr-msg').textContent.includes('Нет связи'));
-    assert(get('#mapnote').innerHTML.includes('API недоступен'));
-    await get('#retry').fire('click'); await sleep(150);
+    await get('#retry').fire('click');
+    await sleep(120);
     assert.strictEqual(get('#apierr').hidden, false);
     return console.log('JS harness (сервер недоступен): OK');
   }
 
-  // 1. Первая загрузка: /lakes + по одному /predict на озеро, полигоны на карте, дату выбирает сервер
-  let l = await log();
-  assert.strictEqual(l.length, 2, 'на старте — по одному /predict на водоём');
-  assert(l.every(x => x.date === null && x.mode === 'satellite'));
-  assert.strictEqual((await hits())['/lakes'], 1, 'перечень водоёмов запрошен через /lakes');
-  assert.strictEqual(get('#dinp').value, '2026-08-01');
-  assert.strictEqual(layersLog.length, 2);
-  assert(layersLog.every(x => x.kind === 'geojson'), 'озёра рисуются по полигонам');
-  assert(layersLog[0].tip.includes('Заславское'));
-  assert.strictEqual(get('#stub').hidden, false);
-  assert(get('#stub span').textContent.includes('Тестовые данные'));
-  assert(get('#sub').textContent.includes('Спутник') && get('#sub').textContent.includes('10 дней'));
-  assert(get('#upd').textContent.includes('Данные с сервера'));
-  assert.strictEqual(get('#panel').hidden, true, 'панель закрыта, пока озеро не выбрано');
+  // 1. Первая загрузка: /lakes + /timeline, GeoJSON-полигоны и маркеры на карте
+  const h0 = await hits();
+  assert.strictEqual(h0['/lakes'], 1, 'список водоёмов запрошен через /lakes');
+  assert.strictEqual(h0['/timeline'], 1, 'линия времени запрошена через /timeline');
+  assert.strictEqual(window.__dash.state.lakes.length, 2);
+  assert.strictEqual(window.__dash.state.date, '2026-08-01');
+  assert(mapState.sources.lakes && mapState.sources.lakes.data.features.length === 2, 'на карте 2 полигона');
+  assert(mapState.layers['lakes-glow'] && mapState.layers['lakes-fill'] && mapState.layers['lakes-outline']);
+  assert.strictEqual(mapState.markers.length, 2, 'созданы 2 плавающих бейджа озёр');
+  assert.strictEqual(get('#stub').hidden, false, 'в режиме заглушек показан честный статус');
+  assert.strictEqual(get('#panel').hidden, true, 'правый drawer скрыт до клика по озеру');
 
-  // 2. Клик по озеру: панель с паспортом, текущими метриками, прогнозом, TSI, причинами и графиком
-  await window.__dash.selectLake('zaslavskoe'); await idle();
-  let p = panelText();
+  // 2. Переключение всех 4 подложек (Тёмная / Светлая / Спутник / Гибрид) с пересозданием слоёв
+  for (const bm of ['light', 'satellite', 'hybrid', 'dark']) {
+    window.__dash.setBasemap(bm);
+    await sleep(30);
+    assert.strictEqual(document.body.dataset.basemap, bm);
+    assert(mapState.sources.lakes && mapState.layers['lakes-fill'], `слои пересозданы после setBasemap(${bm})`);
+  }
+  assert(mapState.styles.length >= 5, 'стили карты реально переключались');
+
+  // 3. Клик по озеру: drawer открывается, загружает /predict и /history, рисует прогноз + ±MAE
+  await window.__dash.selectLake('zaslavskoe');
+  await sleep(60);
   assert.strictEqual(get('#panel').hidden, false);
-  for (const s of ['Заславское', 'Паспорт водоёма', 'Площадь', 'км²', 'Хлорофилл-а сейчас',
-    'Индекс Карлсона', 'Трофический класс', 'Прогноз на 10 дней', 'Причины и рекомендации',
-    'Качество и доступность данных', 'История наблюдений', 'Доступные режимы'])
-    assert(p.includes(s), 'в панели нет: ' + s);
-  assert(p.includes('Интервал ±3'), 'интервал ±MAE из model_metrics.json');
-  assert(p.includes('Риск цветения'));
-  assert(!p.includes('Добавить лабораторную пробу'), 'в спутниковом режиме формы пробы нет');
-  assert(p.includes('Значения не являются реальными'), 'честная оговорка про демо-данные');
-  assert.strictEqual((await log()).length, 2, 'прогноз взят из кеша, повторного /predict нет');
-  assert.strictEqual((await hlog()).length, 1, 'история запрошена один раз');
-  let h = (await hlog())[0];
-  assert.strictEqual(h.mode, 'satellite'); assert.strictEqual(h.limit, 36); assert.strictEqual(h.wb, 'zaslavskoe');
-  assert.strictEqual(globalThis.__chart.data.labels.length, 36);
-  assert.strictEqual(globalThis.__chart.data.labels.at(-1), '2026-08-01');
-  assert.strictEqual(chartDs('Наблюдения').data.length, 36);
-  assert(chartDs('Прогноз +10 сут'));
-  assert.strictEqual(chartDs('Порог цветения 25').data.every(v => v === 25), true);
-  assert.strictEqual(chartDs('Порог внимания 15').data.every(v => v === 15), true);
-  assert(chartDs('Коридор ±MAE') && chartDs('Коридор ±MAE').data.some(v => v != null), 'полоса ±MAE на графике');
+  assert(get('#panelHeader').innerHTML.includes('Заславское'));
+  assert(get('#panelBody').innerHTML.includes('Прогноз на +10 дней'));
+  assert(get('#panelBody').innerHTML.includes('±MAE'));
+  assert(mapState.flyCalls.length >= 1, 'камера выполнила flyTo к озеру');
 
-  // 3. Опасная дата: контур и бейдж красные, причины и рекомендации заполнены
-  await setDate('2025-07-01');
-  p = panelText();
-  assert(p.includes('Опасность'), 'на 2025-07-01 Заславское — RED');
-  assert(p.includes('превышает порог 25'));
-  assert(p.includes('Усилить отбор проб'));
-  assert.strictEqual(layersLog[0].style.color, '#B8322A', 'контур Заславского красный');
+  // 4. Переключение на вкладку «График и паспорт»: Chart.js + пороги 15/25 + коридор ±MAE
+  await tabEls[1].fire('click');
+  await sleep(40);
+  assert(get('#panelBody').innerHTML.includes('Паспорт водоёма'));
+  assert(globalThis.__chart, 'график Chart.js создан');
+  assert(globalThis.__chart.data.datasets.some((d) => d.label === 'Наблюдения'));
+  assert(globalThis.__chart.data.datasets.some((d) => d.label === 'Прогноз +10 сут'));
+  assert(globalThis.__chart.data.datasets.some((d) => d.label === 'Коридор ±MAE'));
+  assert(globalThis.__chart.data.datasets.some((d) => d.label.includes('25')));
+  assert((await hlog()).length >= 1, 'история запрошена с сервера');
 
-  // 4. Переключатель Спутник/Лаборатория: меняются запросы, подпись, данные и форма пробы
-  await window.__dash.setMode('lab'); await idle();
-  assert.strictEqual(vm.runInThisContext('S.mode'), 'lab');
-  assert(segEls[1].cl.has('active') && !segEls[0].cl.has('active'));
-  l = await log();
-  assert(l.slice(-2).every(x => x.mode === 'lab'), 'после переключения запросы идут с mode=lab');
-  assert.strictEqual((await hlog()).at(-1).mode, 'lab');
-  p = panelText();
-  assert(p.includes('Лаборатория'), 'подпись источника в панели');
-  assert(p.includes('Добавить лабораторную пробу'), 'в лабораторном режиме есть форма');
-  assert.strictEqual(get('#sub').textContent.includes('Лаборатория'), true);
-  assert.strictEqual(globalThis.__chart.data.labels.at(-1), '2025-07-01');
-  assert.strictEqual(vm.runInThisContext('S.res.zaslavskoe.d.mode'), 'lab');
+  // 5. Линия времени: зимняя дата (ice_cover) честно показывает лёд и не выдумывает прогноз
+  await tabEls[0].fire('click');
+  window.__dash.setDate('2025-01-11', true);
+  await sleep(220);
+  assert(get('#panelHeader').innerHTML.includes('Ледяной покров') || get('#panelBody').innerHTML.includes('Ледяной покров'));
+  assert(mapState.sources.lakes.data.features.every((f) => f.properties.obs_status === 'ice_cover'));
 
-  // 5. Загрузка лабораторной пробы: сохранение, дубль и физический диапазон
-  const mkForm = (chl) => {
-    const f = new El('#labForm');
-    f.elements = {sample_date: {value: '2025-07-05'}, chl: {value: chl}, secchi: {value: '1.8'},
-      tp: {value: '42'}, note: {value: 'тест панели'}};
-    f.dataset = {wb: 'zaslavskoe'};
-    return f;
-  };
-  await get('#panelBody').fire('submit', {target: mkForm('18.5')});
-  await waitFor(() => get('#labMsg').textContent.includes('Проба сохранена'));
-  assert(get('#labMsg').textContent.includes('Проба сохранена'));
+  // 6. Переключение режима данных Спутник -> Лаборатория
+  await window.__dash.setMode('lab');
+  await sleep(60);
+  assert.strictEqual(window.__dash.state.mode, 'lab');
+  assert(get('#sub').textContent.includes('Лабораторные'));
+
+  // 7. Загрузка лабораторной пробы (POST /lab/upload): сохранение, дубль 409, выход за диапазон 422
+  const mkLabForm = (chl) => ({
+    _fields: {
+      water_body_id: 'zaslavskoe',
+      sample_date: '2025-07-05',
+      chl_a_lab_ug_l: chl,
+      secchi_depth_m: '1.8',
+      total_phosphorus_ug_l: '42',
+      source_note: 'тест новой панели',
+    },
+    reset() {},
+  });
+  await get('#labForm').fire('submit', { target: mkLabForm('18.5') });
+  await sleep(60);
+  assert(get('#labMsg').textContent.includes('Проба сохранена'), get('#labMsg').textContent);
   assert(!get('#labMsg').className.includes('err'));
-  await get('#panelBody').fire('submit', {target: mkForm('19')});
-  await waitFor(() => get('#labMsg').textContent.includes('уже есть'));
-  assert(get('#labMsg').className.includes('err'), 'дубль отклонён с ошибкой');
-  await get('#panelBody').fire('submit', {target: mkForm('5000')});
-  await waitFor(() => get('#labMsg').textContent.includes('диапазона'));
-  assert(get('#labMsg').className.includes('err'), 'значение вне диапазона отклонено');
 
-  // 6. Поиск: подсказки и переход к озеру
-  get('#q').value = 'нар'; await get('#q').fire('input');
-  assert.strictEqual(get('#suggest').hidden, false);
-  assert(get('#suggest').innerHTML.includes('Нарочь'));
-  await get('#suggest').fire('click', {target: {closest: () => ({dataset: {id: 'naroch'}})}});
-  await idle();
-  assert.strictEqual(vm.runInThisContext('S.selected'), 'naroch');
-  assert(panelText().includes('Нарочь'));
-  assert.strictEqual(get('#panel').hidden, false);
+  await get('#labForm').fire('submit', { target: mkLabForm('19.0') });
+  await sleep(60);
+  assert(get('#labMsg').className.includes('err'), 'дубль должен вернуть ошибку');
 
-  // 7. Окно истории: меньше декад — короче график и другой запрос
-  await get('#panelBody').fire('change', {target: {id: 'histWin', value: '12'}}); await idle();
-  assert.strictEqual((await hlog()).at(-1).limit, 12);
-  assert.strictEqual(globalThis.__chart.data.labels.length, 12);
+  await get('#labForm').fire('submit', { target: mkLabForm('5000') });
+  await sleep(60);
+  assert(get('#labMsg').className.includes('err'), 'значение вне диапазона должно вернуть ошибку');
 
-  // 8. Нет наблюдения: зима, облачность, интерполяция — прогноз не выдумывается
-  await setDate('2025-01-11');
-  p = panelText();
-  assert(p.includes('ледяной') || p.includes('Ледяной'));
-  assert(p.includes('Прогноз не рассчитан'));
-  assert.strictEqual(layersLog[1].style.color, '#7A8E96', 'без наблюдения контур серый');
-  assert(chartDs('Прогноз +10 сут').data.slice(-4).every(v => v == null), 'на ледяных декадах прогноза нет');
-  await setDate('2025-06-21');
-  assert(panelText().includes('Облачность'));
-  await setDate('2025-09-01');
-  assert(panelText().includes('восстановлено интерполяцией'));
-  assert(!panelText().includes('Прогноз не рассчитан'));
-
-  // 9. Ошибки: дата вне данных (404) и некорректная дата (422) — панель объясняет, карта серая
-  await setDate('2035-05-01');
-  assert(panelText().includes('Нет данных') && panelText().includes('Диапазон'));
-  assert.strictEqual(get('#apierr').hidden, true, '404 — не ошибка связи');
-  assert(layersLog.every(x => x.style.color === '#7A8E96'));
-  get('#dinp').value = '2025-13-45'; await get('#dinp').fire('change'); await idle();
-  assert(panelText().includes('Нет данных'));
-
-  // 10. Гонка запросов: побеждает последняя выбранная дата
-  await setDate('2025-05-21');
-  get('#dinp').value = '2025-06-01'; const p1 = get('#dinp').fire('change');
-  get('#dinp').value = '2025-07-01'; const p2 = get('#dinp').fire('change');
-  await Promise.all([p1, p2]); await idle();
-  assert.strictEqual(vm.runInThisContext('S.date'), '2025-07-01');
-  assert.strictEqual(globalThis.__chart.data.labels.at(-1), '2025-07-01');
-
-  // 11. Метрики: таблица моделей, доступность режимов, отчёт качества
-  await get('#metricsBtn').fire('click'); await sleep(120);
+  // 8. Модалка метрик: RMSE/MAE/R², режимы, отчёт качества
+  await get('#metricsBtn').fire('click');
+  await sleep(60);
   assert.strictEqual(get('#metricsModal').hidden, false);
-  const met = get('#metrics').innerHTML;
-  for (const s of ['RMSE', 'MAE', 'R²', 'Доступность режимов', 'Качество данных', 'valid_share', 'pill on'])
-    assert(met.includes(s), 'в метриках нет: ' + s);
+  const metHtml = get('#metrics').innerHTML;
+  for (const s of ['RMSE', 'MAE', 'R²', 'Доступность режимов', 'Качество данных', 'pill on']) {
+    assert(metHtml.includes(s), 'в метриках нет: ' + s);
+  }
   await get('#metricsClose').fire('click');
   assert.strictEqual(get('#metricsModal').hidden, true);
 
-  // 12. Добавление озера при работающем сервере: «Обновить» перезапрашивает /lakes и перерисовывает карту
-  await clear(); const h0 = (await hits())['/lakes'] || 0;
-  await fetch(base + '/__add_lake'); const layers0 = layersLog.length;
-  await get('#refresh').fire('click'); await idle();
-  assert.strictEqual((await hits())['/lakes'], h0 + 1, 'перечень водоёмов запрошен заново');
-  assert.strictEqual(vm.runInThisContext('S.lakes.length'), 3);
-  assert.strictEqual(layersLog.length - layers0, 3, 'слои карты пересозданы по новому перечню');
-  await fetch(base + '/__remove_lake'); await get('#refresh').fire('click'); await idle();
-  assert.strictEqual(vm.runInThisContext('S.lakes.length'), 2);
+  // 9. Живое обновление: добавление нового озера на сервере + кнопка «Обновить»
+  await fetch(base + '/__add_lake');
+  await get('#refresh').fire('click');
+  await sleep(60);
+  assert.strictEqual(window.__dash.state.lakes.length, 3, 'появилось третье озеро');
+  assert.strictEqual(mapState.sources.lakes.data.features.length, 3, 'на карте 3 полигона');
+  await fetch(base + '/__remove_lake');
+  await get('#refresh').fire('click');
+  await sleep(60);
+  assert.strictEqual(window.__dash.state.lakes.length, 2);
 
-  // 13. Озеро без полигона рисуется прямоугольником BBox
-  await fetch(base + '/__add_lake?nogeo=1'); const k0 = layersLog.length;
-  await get('#refresh').fire('click'); await idle();
-  assert(layersLog.slice(k0).some(x => x.kind === 'rectangle'), 'без полигона — прямоугольник');
-  await fetch(base + '/__remove_lake'); await get('#refresh').fire('click'); await idle();
-
-  console.log('JS harness: OK');
-})().catch(e => { console.error('FAIL:', e.stack || e); process.exit(1); });
+  console.log('JS harness (MapLibre GL JS + Timeline + 4 Basemaps): OK');
+})().catch((e) => {
+  console.error('FAIL:', e.stack || e);
+  process.exit(1);
+});

@@ -95,14 +95,22 @@ class H(BaseHTTPRequestHandler):
             stubs.WATER_BODIES["novoe"] = dict(id="novoe", name="Новое озеро", type="lake", lat=54.82, lon=26.73, bbox=b,
                 geometry=None if q.get("nogeo") else stubs._polygon(b), area_km2=5.0, mean_depth_m=3.0,
                 base=2.0, amp=20.0, lab_base=1.0, lab_amp=4.0)
+            C["timeline_cache"].clear()
             return self.send(200, {})
-        if u.path == "/__remove_lake": stubs.WATER_BODIES.pop("novoe", None); return self.send(200, {})
+        if u.path == "/__remove_lake":
+            stubs.WATER_BODIES.pop("novoe", None)
+            C["timeline_cache"].clear()
+            return self.send(200, {})
         if u.path == "/":
             return self.send(200, {"status": "ok", "horizon_days": HORIZON_DAYS,
                                    "components": C["status"], "modes": pipeline.mode_catalog(C)})
         if u.path in ("/lakes", "/water-bodies"):
             return self.send(200, [{**wb, "modes": pipeline.modes_for(C, wb_id)}
                                    for wb_id, wb in C["registry"].items()])
+        if u.path == "/timeline":
+            mode = q.get("mode", ["satellite"])[0]
+            if mode not in MODES: return self.send(422, {"detail": "Режим только satellite или lab"})
+            return self.send(200, pipeline.timeline(C, mode))
         if u.path == "/metrics":
             return self.send(200, {**C["metrics"], "data_quality": QUALITY,
                                    "modes": pipeline.mode_catalog(C), "horizon_days": HORIZON_DAYS})
@@ -153,7 +161,7 @@ class H(BaseHTTPRequestHandler):
 
 
 FRONT = Path(__file__).resolve().parents[1] / "frontend"
-DYNAMIC_IDS = {"chart", "histWin", "labForm", "labMsg"}      # создаются панелью по ходу работы
+DYNAMIC_IDS = {"drawerClose", "chart", "histWin"}            # создаются панелью по ходу работы
 
 
 def check_files():
@@ -162,13 +170,15 @@ def check_files():
     assert 'href="style.css"' in html and 'src="app.js"' in html
     assert "<style>" not in html and "<script>" not in html, "стили и код вынесены в отдельные файлы"
     assert "const D =" not in js, "данных внутри страницы быть не должно"
-    for ep in ("/lakes", "/predict/", "/history/", "/metrics", "/lab/upload"): assert ep in js, ep
-    ids = set(re.findall(r"\$\('#([\w-]+)", js)) | set(re.findall(r"L\.map\('([\w-]+)'", js))
+    for ep in ("/lakes", "/timeline", "/predict/", "/history/", "/metrics", "/lab/upload"):
+        assert ep in js, ep
+    ids = set(re.findall(r"\$\('#([\w-]+)", js))
     missing = sorted(i for i in ids - DYNAMIC_IDS if f'id="{i}"' not in html)
     assert not missing, f"JS обращается к элементам, которых нет в index.html: {missing}"
     used = set()
-    for chunk in re.findall(r'class="([^"]*)"', js):                      # статические классы из шаблонов JS
-        used |= {t for t in re.split(r"\s+", re.sub(r"\$\{[^}]*\}", " ", chunk)) if t}
+    for chunk in re.findall(r'class="([^"]*)"', js):
+        cleaned = re.sub(r"\$\{[^}]*\}", " ", chunk)
+        used |= {t for t in re.split(r"\s+", cleaned) if t and re.fullmatch(r"[A-Za-z_][\w-]*", t)}
     in_html = {t for chunk in re.findall(r'class="([^"]*)"', html) for t in chunk.split()}
     no_style = sorted(t for t in used if not re.search(r"\." + re.escape(t) + r"(?![\w-])", css) and t not in in_html)
     assert not no_style, f"в style.css нет правил для классов из JS: {no_style}"
@@ -181,13 +191,19 @@ def run_node(front, base, mode=""):
     assert r.returncode == 0, r.stderr
 
 
+def test_dashboard_dynamic():
+    main()
+
+
 def main():
     check_files()
     if not shutil.which("node"):
         print("Node.js не найден: тест панели пропущен"); return
     srv = ThreadingHTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
-    run_node(FRONT, f"http://127.0.0.1:{srv.server_port}")
-    srv.shutdown()
+    try:
+        run_node(FRONT, f"http://127.0.0.1:{srv.server_port}")
+    finally:
+        srv.shutdown()
     s = socket.socket(); s.bind(("127.0.0.1", 0)); dead = s.getsockname()[1]; s.close()   # порт, где никого нет
     run_node(FRONT, f"http://127.0.0.1:{dead}", "dead")
     print("OK")

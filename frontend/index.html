@@ -1,94 +1,255 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Мониторинг эвтрофикации водоёмов Беларуси</title>
-<meta name="description" content="Карта риска эвтрофикации озёр Беларуси: наблюдения Sentinel-2 и лабораторные пробы, прогноз на 10 дней.">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<link rel="stylesheet" href="style.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Эвтрофикация озёр Беларуси · Интерактивная веб-ГИС</title>
+  <meta name="description" content="Интеллектуальная система мониторинга, 10-дневного прогнозирования и раннего предупреждения риска эвтрофикации озёр Нарочанской и Мядельской групп.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="style.css">
 </head>
-<body>
-<div class="app">
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo" aria-hidden="true">≈</span>
-      <div>
-        <h1>Эвтрофикация водоёмов</h1>
-        <p id="sub">Наблюдения и прогноз на 10 дней</p>
+<body data-basemap="dark">
+  <div class="app-shell">
+    <!-- Полноэкранная интерактивная карта MapLibre GL JS -->
+    <div id="map" class="map-container" role="application" aria-label="Интерактивная карта озёр Беларуси"></div>
+
+    <!-- Всплывающая подсказка при наведении на озеро -->
+    <div id="mapTooltip" class="map-tooltip" hidden></div>
+
+    <!-- Верхняя левая стеклянная панель управления -->
+    <header class="top-bar glass-panel">
+      <div class="brand-block">
+        <span class="brand-dot" aria-hidden="true"></span>
+        <div>
+          <div class="brand-title">Эвтрофикация · Нарочь–Мядель</div>
+          <div id="sub" class="brand-subtitle">Sentinel-2 L2A · Прогноз +10 сут</div>
+        </div>
+      </div>
+
+      <span class="divider-v" aria-hidden="true"></span>
+
+      <!-- Переключатель подложки карты: Тёмная / Светлая / Спутник / Гибрид -->
+      <div class="mode-switch" id="basemapSwitch" role="group" aria-label="Режим подложки карты">
+        <button type="button" class="mode-btn active" data-basemap="dark" title="Тёмная схематичная карта">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <span>Тёмная</span>
+        </button>
+        <button type="button" class="mode-btn" data-basemap="light" title="Светлая схематичная карта">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+          <span>Светлая</span>
+        </button>
+        <button type="button" class="mode-btn" data-basemap="satellite" title="Спутниковые снимки Esri World Imagery">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          <span>Спутник</span>
+        </button>
+        <button type="button" class="mode-btn" data-basemap="hybrid" title="Спутник + дороги и подписи (как в Google Maps)">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+          <span>Гибрид</span>
+        </button>
+      </div>
+
+      <span class="divider-v" aria-hidden="true"></span>
+
+      <!-- Переключатель источника данных: Спутник / Лаборатория БГУ -->
+      <div class="mode-switch" id="modeSwitch" role="tablist" aria-label="Источник данных">
+        <button type="button" class="mode-btn seg active" data-mode="satellite" role="tab" aria-selected="true">Спутник</button>
+        <button type="button" class="mode-btn seg" data-mode="lab" role="tab" aria-selected="false">Лаборатория</button>
+      </div>
+
+      <span class="divider-v" aria-hidden="true"></span>
+
+      <!-- Быстрые действия -->
+      <div class="top-actions">
+        <button type="button" class="icon-btn" id="resetCamBtn" title="Сбросить камеру на всю группу озёр" aria-label="Сбросить камеру">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+        </button>
+        <button type="button" class="icon-btn" id="refresh" title="Обновить список озёр и данные с сервера" aria-label="Обновить данные">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
+        <button type="button" class="pill-btn" id="metricsBtn" title="Метрики моделей и отчёт качества данных">Метрики</button>
+        <button type="button" class="pill-btn accent" id="labModalBtn" title="Загрузить лабораторную пробу БГУ">+ Проба</button>
+        <button type="button" class="icon-btn" id="helpBtn" title="О системе и порогах СанПиН / ВОЗ" aria-label="Справка">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Компактные уведомления о статусе компонентов и ошибках API -->
+    <div class="status-stack">
+      <div id="stub" class="status-pill warn glass-panel" hidden>
+        <span id="stubText"></span>
+        <button type="button" class="status-close" id="stubClose" aria-label="Скрыть">×</button>
+      </div>
+      <div id="apierr" class="status-pill danger glass-panel" role="alert" hidden>
+        <span id="apierr-msg"></span>
+        <button type="button" class="pill-btn small" id="retry">Повторить</button>
       </div>
     </div>
 
-    <div class="searchbox">
-      <label class="sr-only" for="q">Поиск водоёма</label>
-      <input id="q" type="search" placeholder="Найти озеро…" autocomplete="off" aria-controls="suggest" aria-expanded="false">
-      <div id="suggest" class="suggest" role="listbox" hidden></div>
-    </div>
-
-    <div class="controls">
-      <div class="segmented" id="modeSwitch" role="tablist" aria-label="Источник данных">
-        <button type="button" class="seg active" data-mode="satellite" role="tab" aria-selected="true">Спутник</button>
-        <button type="button" class="seg" data-mode="lab" role="tab" aria-selected="false">Лаборатория</button>
-      </div>
-      <label class="datefield">
-        <span>Дата</span>
-        <input type="date" id="dinp">
-      </label>
-      <div class="stepbtns">
-        <button type="button" class="iconbtn" id="prev" aria-label="Предыдущая декада" title="Предыдущая декада">‹</button>
-        <button type="button" class="iconbtn" id="next" aria-label="Следующая декада" title="Следующая декада">›</button>
-      </div>
-      <button type="button" class="btn ghost" id="metricsBtn">Метрики</button>
-      <button type="button" class="btn" id="refresh">Обновить</button>
-    </div>
-  </header>
-
-  <div id="stub" class="banner stub" hidden><span></span></div>
-  <div id="apierr" class="banner alert" role="alert" hidden>
-    <span id="apierr-msg"></span><button type="button" class="btn small" id="retry">Повторить</button>
-  </div>
-
-  <main class="stage">
-    <div id="map" role="application" aria-label="Карта водоёмов Беларуси"></div>
-
-    <div class="legend" aria-label="Легенда уровня риска">
-      <strong>Уровень риска</strong>
-      <span><i class="dot ok"></i>Норма</span>
-      <span><i class="dot warn"></i>Внимание</span>
-      <span><i class="dot bad"></i>Опасность</span>
-      <span><i class="dot err"></i>Нет наблюдения</span>
-    </div>
-
-    <div class="mapnote" id="mapnote">
-      <div>
-        <h2>Выберите водоём на карте</h2>
-        <p>Цвет контура показывает прогноз риска эвтрофикации на 10 дней. Нажмите на озеро, чтобы открыть паспорт, прогноз и историю наблюдений.</p>
+    <!-- Верхний правый селектор озёр с поиском -->
+    <div class="lake-picker-wrap">
+      <button type="button" id="lakePickerBtn" class="lake-picker-btn glass-panel" aria-expanded="false" aria-controls="lakeDropdown">
+        <span class="dot-sm" id="pickerDot"></span>
+        <span id="pickerLabel">Водоёмы</span>
+        <span id="pickerCount" class="picker-count">0</span>
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div id="lakeDropdown" class="lake-dropdown glass-panel" hidden>
+        <div class="picker-search-wrap">
+          <input id="q" class="picker-search" type="search" placeholder="Найти озеро…" autocomplete="off" aria-label="Поиск водоёма">
+        </div>
+        <div id="lakeList" class="lake-list" role="listbox"></div>
       </div>
     </div>
 
-    <aside id="panel" class="panel" hidden aria-label="Информация о водоёме">
-      <div class="panel-inner" id="panelBody" aria-live="polite"></div>
+    <!-- Правая выдвижная карточка выбранного озера -->
+    <aside id="panel" class="drawer glass-panel" hidden aria-label="Инспектор водоёма">
+      <div id="panelHeader" class="drawer-header"></div>
+      <div class="drawer-tabs" role="tablist">
+        <button type="button" class="drawer-tab active" data-tab="overview" role="tab" aria-selected="true">Состояние и прогноз</button>
+        <button type="button" class="drawer-tab" data-tab="history" role="tab" aria-selected="false">График и паспорт</button>
+      </div>
+      <div id="panelBody" class="drawer-body" aria-live="polite"></div>
     </aside>
-  </main>
 
-  <footer class="foot">
-    <span><strong>Исследовательский прототип СППР.</strong> Не заменяет лабораторный контроль и не является оповещением в реальном времени.</span>
-    <span id="upd" class="upd" aria-live="polite"></span>
-  </footer>
-</div>
+    <!-- Нижняя левая компактная легенда и статистика по дате -->
+    <section class="legend-pill glass-panel" aria-label="Легенда и сводка">
+      <div class="legend-head">
+        <span id="legendTitle" class="section-label">Состояние озёр</span>
+        <span id="upd" class="legend-sync"></span>
+      </div>
+      <div id="legendItems" class="legend-items"></div>
+      <div class="legend-foot">
+        <label class="cascade-toggle">
+          <input type="checkbox" id="cascadeToggle" checked>
+          <span class="cascade-dash"></span>
+          <span>Каскадный сток</span>
+        </label>
+      </div>
+    </section>
 
-<div id="metricsModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="metricsTitle">
-  <div class="modal-card">
-    <header><h2 id="metricsTitle">Качество моделей и данных</h2><button type="button" class="iconbtn" id="metricsClose" aria-label="Закрыть">×</button></header>
-    <div id="metrics" class="modal-body"><p class="hint">Загрузка…</p></div>
+    <!-- Нижняя центральная линия времени (Chronas Timeline Bar) -->
+    <section class="timeline-bar glass-panel" aria-label="Линия времени 2018–2026">
+      <div class="timeline-row">
+        <button type="button" id="playBtn" class="play-btn" title="Воспроизвести динамику по декадам (Пробел)" aria-label="Воспроизвести">
+          <svg id="playIcon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>
+        </button>
+
+        <div class="step-group">
+          <button type="button" id="prev" class="step-btn" title="Предыдущая декада (←)" aria-label="Предыдущая декада">‹</button>
+          <button type="button" id="next" class="step-btn" title="Следующая декада (→)" aria-label="Следующая декада">›</button>
+        </div>
+
+        <div id="yearTrack" class="epoch-track" role="group" aria-label="Быстрый переход по годам"></div>
+
+        <button type="button" id="openWaterToggle" class="season-toggle active" title="Пропускать зимние ледовые декады при проигрывании">
+          <span>IV–XI</span>
+        </button>
+      </div>
+
+      <div class="timeline-slider-row">
+        <input id="timeSlider" class="gis-slider" type="range" min="0" max="0" value="0" aria-label="Выбор декады на шкале времени">
+      </div>
+
+      <div class="timeline-caption">
+        <div class="timeline-date-wrap">
+          <strong id="activeDateLabel" class="active-date-text">—</strong>
+          <label class="date-jump-btn" title="Выбрать произвольную дату">
+            <span>Календарь</span>
+            <input type="date" id="dinp" aria-label="Выбор даты">
+          </label>
+        </div>
+        <span id="timelineSummary" class="timeline-summary">Загрузка временного ряда…</span>
+      </div>
+    </section>
   </div>
-</div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script src="app.js"></script>
+  <!-- Модальное окно: Метрики моделей и качество данных -->
+  <div id="metricsModal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="metricsTitle">
+    <div class="modal-card glass-panel">
+      <div class="modal-head">
+        <h2 id="metricsTitle">Качество данных и метрики моделей</h2>
+        <button type="button" class="icon-btn" id="metricsClose" aria-label="Закрыть">×</button>
+      </div>
+      <div id="metrics" class="modal-body"><p class="muted-text">Загрузка…</p></div>
+    </div>
+  </div>
+
+  <!-- Модальное окно: Загрузка лабораторной пробы БГУ -->
+  <div id="labModal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="labModalTitle">
+    <div class="modal-card glass-panel">
+      <div class="modal-head">
+        <h2 id="labModalTitle">Добавить лабораторную пробу</h2>
+        <button type="button" class="icon-btn" id="labModalClose" aria-label="Закрыть">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="muted-text">Проба проходит проверку физических диапазонов, сверяется с ближайшим снимком Sentinel-2 и сохраняется в таблицу лабораторных измерений.</p>
+        <form id="labForm" class="lab-form">
+          <label class="form-field">
+            <span>Водоём</span>
+            <select id="labLakeSelect" name="water_body_id" required></select>
+          </label>
+          <div class="form-grid-2">
+            <label class="form-field">
+              <span>Дата отбора пробы</span>
+              <input type="date" id="labDateInput" name="sample_date" required>
+            </label>
+            <label class="form-field">
+              <span>Хлорофилл-а, мкг/л *</span>
+              <input type="number" name="chl_a_lab_ug_l" step="0.1" min="0.1" max="1000" placeholder="напр. 8.4" required>
+            </label>
+          </div>
+          <div class="form-grid-2">
+            <label class="form-field">
+              <span>Диск Секки, м</span>
+              <input type="number" name="secchi_depth_m" step="0.1" min="0.1" max="50" placeholder="напр. 3.5">
+            </label>
+            <label class="form-field">
+              <span>Общий фосфор, мкг/л</span>
+              <input type="number" name="total_phosphorus_ug_l" step="1" min="1" max="1000" placeholder="напр. 24">
+            </label>
+          </div>
+          <label class="form-field">
+            <span>Примечание / источник</span>
+            <input type="text" name="source_note" maxlength="300" placeholder="Нарочанская биостанция БГУ, пелагиаль">
+          </label>
+          <div class="form-actions">
+            <button type="submit" class="pill-btn accent wide">Сохранить пробу</button>
+          </div>
+          <div id="labMsg" class="lab-msg" hidden></div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно: Справка и методика -->
+  <div id="helpModal" class="modal-backdrop" hidden role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+    <div class="modal-card glass-panel">
+      <div class="modal-head">
+        <h2 id="helpTitle">О системе мониторинга эвтрофикации</h2>
+        <button type="button" class="icon-btn" id="helpClose" aria-label="Закрыть">×</button>
+      </div>
+      <div class="modal-body">
+        <p>Интерактивная веб-ГИС объединяет реальные спутниковые наблюдения <strong>Sentinel-2 L2A (2018–2026)</strong>, суточную метеорологию <strong>NASA POWER</strong>, лабораторные измерения <strong>Нарочанской биостанции БГУ</strong>, прогнозные ML-модели (+10 суток) и семантический граф знаний с ограничениями ООПТ.</p>
+        <div class="formula-box">
+          TSI(Chl-a) = 9.81 · ln(Chl-a) + 30.6 (индекс Карлсона)<br>
+          Норма: &lt; 15 мкг/л · Внимание: 15–25 мкг/л · Цветение: ≥ 25 мкг/л
+        </div>
+        <ul class="help-list">
+          <li><strong>Честные статусы данных:</strong> зимние декады (<em>ice_cover</em>) и сплошная облачность (<em>cloudy_missing</em>) не замазываются вымышленными значениями — линия на графике и маркер на карте честно отражают отсутствие наблюдения.</li>
+          <li><strong>Режимы карты:</strong> переключение между тёмной/светлой схемой, спутником Esri World Imagery и гибридом (спутник + дороги и населённые пункты) без API-ключей.</li>
+          <li><strong>Горячие клавиши:</strong> <code>Пробел</code> — Play/Pause, <code>← / →</code> — шаг ±10 дней, <code>Esc</code> — закрыть панель.</li>
+        </ul>
+        <p class="disclaimer-note">Исследовательский прототип СППР. Не заменяет официальный лабораторный контроль Минприроды и не является системой экстренного оповещения.</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

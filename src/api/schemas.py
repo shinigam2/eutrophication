@@ -33,6 +33,9 @@ class WaterBodyInfo(BaseModel):
     bbox: Optional[BBox] = None
     geometry: Optional[dict] = Field(None, description="Полигон озера (GeoJSON Polygon/MultiPolygon)")
     # паспорт водоёма (из configs/water_bodies.yaml)
+    group: Optional[str] = None
+    basin: Optional[str] = None
+    notes: Optional[str] = None
     area_km2: Optional[float] = None
     mean_depth_m: Optional[float] = None
     max_depth_m: Optional[float] = None
@@ -40,6 +43,13 @@ class WaterBodyInfo(BaseModel):
     watershed_km2: Optional[float] = None
     watershed_ratio: Optional[float] = None
     protected_area: Optional[str] = Field(None, description="ООПТ / режим охраны, если задан в конфиге")
+    has_lab_data: Optional[bool] = None
+    chemical_treatment_allowed: Optional[bool] = None
+    stratification_type: Optional[str] = None
+    cascade_inflow_from: List[str] = Field(default_factory=list)
+    cascade_outflow_to: Optional[str] = None
+    attention_ug_l: float = 15.0
+    bloom_ug_l: float = 25.0
     # какие режимы реально доступны для этого озера
     modes: List[Mode] = Field(default_factory=list, description="satellite и/или lab")
 
@@ -51,6 +61,7 @@ class ObservationInfo(BaseModel):
     is_interpolated: bool = False
     scenes_in_decade: Optional[int] = None
     valid_water_pixels: Optional[int] = None
+    water_coverage_pct: Optional[float] = None
     source: Optional[str] = Field(None, description="Откуда взято наблюдение (Sentinel-2 L2A / проба БГУ / CSV)")
     scene_id: Optional[str] = Field(None, description="Номер сцены Sentinel-2, если он есть в витрине")
 
@@ -65,6 +76,8 @@ class AlertResponse(BaseModel):
     chl_a_current: Optional[float] = Field(description="Хлорофилл-a сейчас, мкг/л")
     obs_status: Optional[str] = Field(None, description="valid | interpolated_1step | cloudy_missing | ice_cover | insufficient_pixels")
     is_interpolated: Optional[bool] = None
+    observed_tsi: Optional[float] = Field(None, description="Индекс Карлсона по фактическому наблюдению")
+    observed_trophic_class: Optional[str] = Field(None, description="Трофический класс по фактическому наблюдению")
     chl_a_forecast: Optional[float] = Field(None, description="Прогноз хлорофилла-a через horizon_days, мкг/л (нет, если нет наблюдения)")
     pred_low_ug_l: Optional[float] = Field(None, description="Нижняя граница прогноза, мкг/л (±MAE модели)")
     pred_high_ug_l: Optional[float] = Field(None, description="Верхняя граница прогноза, мкг/л (±MAE модели)")
@@ -78,6 +91,13 @@ class AlertResponse(BaseModel):
     recommendations: List[str]
     temp_mean_14d: Optional[float] = None
     calm_fraction_7d: Optional[float] = None
+    precip_sum_14d: Optional[float] = None
+    wind_mean_7d: Optional[float] = None
+    radiation_mean_7d: Optional[float] = None
+    ndci_current: Optional[float] = None
+    b04_b02_ratio: Optional[float] = None
+    secchi_depth_m: Optional[float] = None
+    total_phosphorus_ug_l: Optional[float] = None
     observation: Optional[ObservationInfo] = None
     sources: List[str] = Field(default_factory=list, description="Реальные источники, использованные для этого ответа")
     notes: List[str] = Field(default_factory=list, description="Оговорки: чего не хватило (например, нет MAE для интервала)")

@@ -70,7 +70,14 @@ def _norm_bbox(raw) -> Optional[dict]:
 
 
 def load_registry(path: Path) -> Dict[str, dict]:
-    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    raw_root = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    default_thr = {}
+    if isinstance(raw_root, dict) and isinstance(raw_root.get("pipeline"), dict):
+        default_thr = raw_root["pipeline"].get("default_thresholds") or {}
+    att_default = _num(default_thr.get("attention_ug_l")) or 15.0
+    bloom_default = _num(default_thr.get("bloom_ug_l")) or 25.0
+
+    raw = raw_root
     if isinstance(raw, dict) and "water_bodies" in raw:
         raw = raw["water_bodies"]
     if isinstance(raw, dict):
@@ -80,6 +87,8 @@ def load_registry(path: Path) -> Dict[str, dict]:
     out: Dict[str, dict] = {}
     for e in raw:
         flat = dict(e)
+        if flat.get("enabled") is False:
+            continue
         for nested in ("morphometry", "coordinates", "location"):
             if isinstance(e.get(nested), dict):
                 flat.update(e[nested])
@@ -95,6 +104,16 @@ def load_registry(path: Path) -> Dict[str, dict]:
         protected = _first(flat, ["protected_area", "oopt", "protection"])
         if protected is None and eco:
             protected = _first(eco, ["protected_area", "oopt", "status"])
+        inflow = eco.get("cascade_inflow_from")
+        if isinstance(inflow, str):
+            inflow_list = [inflow]
+        elif isinstance(inflow, list):
+            inflow_list = [str(x) for x in inflow if x]
+        else:
+            inflow_list = []
+        outflow = eco.get("cascade_outflow_to")
+        chem_allowed = eco.get("chemical_treatment_allowed")
+        strat = eco.get("stratification_type")
         area = _num(_first(flat, ["area_km2", "area"]))
         watershed = _num(_first(flat, ["watershed_km2", "catchment_km2", "watershed_area_km2"]))
         ratio = _num(_first(flat, ["watershed_ratio", "catchment_ratio"]))
@@ -103,32 +122,108 @@ def load_registry(path: Path) -> Dict[str, dict]:
         out[str(wb_id)] = dict(
             id=str(wb_id), name=str(_first(flat, ["name", "title", "name_ru"], wb_id)),
             type=str(_first(flat, ["type", "kind"], "lake")), lat=lat, lon=lon, bbox=bbox,
+            group=str(flat["group"]) if flat.get("group") else None,
+            basin=str(flat["basin"]) if flat.get("basin") else None,
+            notes=str(flat["notes"]) if flat.get("notes") else None,
             area_km2=area,
             mean_depth_m=_num(_first(flat, ["mean_depth_m", "mean_depth", "depth_mean", "depth_m", "depth"])),
             max_depth_m=_num(_first(flat, ["max_depth_m", "max_depth", "depth_max"])),
             volume_mln_m3=_num(_first(flat, ["volume_mln_m3", "volume", "volume_mln"])),
             watershed_km2=watershed, watershed_ratio=ratio,
-            protected_area=str(protected) if protected else None)
+            protected_area=str(protected) if protected else None,
+            has_lab_data=bool(flat["has_lab_data"]) if "has_lab_data" in flat else None,
+            chemical_treatment_allowed=bool(chem_allowed) if chem_allowed is not None else None,
+            stratification_type=str(strat) if strat else None,
+            cascade_inflow_from=inflow_list,
+            cascade_outflow_to=str(outflow) if outflow else None,
+            attention_ug_l=_num(flat.get("attention_ug_l")) or att_default,
+            bloom_ug_l=_num(flat.get("bloom_ug_l")) or bloom_default)
     return out
 
 
-def load_geometry(path: Path) -> Dict[str, dict]:
-    """Полигоны озёр из GeoJSON (lakes.geojson): идентификатор -> геометрия Polygon/MultiPolygon."""
+def _geom_bounds_and_center(geom: dict) -> Tuple[Optional[dict], Optional[float], Optional[float]]:
+    """Вычислить bbox и приближённый центр полигона из координат GeoJSON, если их нет в YAML/properties."""
+    coords = []
+    gtype = geom.get("type")
+    if gtype == "Polygon" and geom.get("coordinates"):
+        coords = geom["coordinates"][0]
+    elif gtype == "MultiPolygon" and geom.get("coordinates"):
+        for poly in geom["coordinates"]:
+            if poly:
+                coords.extend(poly[0])
+    pts = [(float(p[0]), float(p[1])) for p in coords if isinstance(p, (list, tuple)) and len(p) >= 2]
+    if not pts:
+        return None, None, None
+    lons = [p[0] for p in pts]
+    lats = [p[1] for p in pts]
+    bbox = dict(min_lat=round(min(lats), 6), min_lon=round(min(lons), 6),
+                max_lat=round(max(lats), 6), max_lon=round(max(lons), 6))
+    return bbox, round((bbox["min_lat"] + bbox["max_lat"]) / 2, 6), round((bbox["min_lon"] + bbox["max_lon"]) / 2, 6)
+
+
+def load_geometry_details(path: Path) -> Tuple[Dict[str, dict], Dict[str, dict]]:
+    """Полигоны и свойства озёр из GeoJSON (lakes.geojson)."""
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     kind = raw.get("type")
     feats = raw.get("features", []) if kind == "FeatureCollection" else [raw] if kind == "Feature" else []
-    out: Dict[str, dict] = {}
+    geoms: Dict[str, dict] = {}
+    props_by_id: Dict[str, dict] = {}
     for f in feats:
         geom = f.get("geometry") or {}
         if geom.get("type") not in ("Polygon", "MultiPolygon"):
             continue
-        key = _first(f.get("properties") or {}, ["id", "water_body_id", "lake_id", "code"], f.get("id"))
+        props = f.get("properties") or {}
+        key = _first(props, ["id", "water_body_id", "lake_id", "code"], f.get("id"))
         if key is not None:
-            out[str(key)] = geom
-    return out
+            k = str(key)
+            geoms[k] = geom
+            props_by_id[k] = props
+    return geoms, props_by_id
 
 
-CHL_COLUMNS = ["chl_a_est_current", "chl_a", "chl_a_current", "chl_a_mean", "chl_a_now", "chlorophyll_a", "chl"]
+def load_geometry(path: Path) -> Dict[str, dict]:
+    """Полигоны озёр из GeoJSON (lakes.geojson): идентификатор -> геометрия Polygon/MultiPolygon."""
+    geoms, _ = load_geometry_details(path)
+    return geoms
+
+
+def hydrate_registry_geometry(registry: Dict[str, dict], geo_path: Path) -> None:
+    """Прикрепить полигоны и дозаполнить center_lat/center_lon/bbox из GeoJSON, если их нет в YAML."""
+    geoms, props_by_id = load_geometry_details(geo_path)
+    for wb_id, wb in registry.items():
+        geom = geoms.get(wb_id)
+        wb["geometry"] = geom
+        props = props_by_id.get(wb_id) or {}
+        if wb.get("bbox") is None and props.get("bbox") is not None:
+            wb["bbox"] = _norm_bbox(props.get("bbox"))
+        if wb.get("lat") is None:
+            wb["lat"] = _num(_first(props, ["center_lat", "lat", "latitude"]))
+        if wb.get("lon") is None:
+            wb["lon"] = _num(_first(props, ["center_lon", "lon", "lng", "longitude"]))
+        if geom and (wb.get("bbox") is None or wb.get("lat") is None or wb.get("lon") is None):
+            gb, glat, glon = _geom_bounds_and_center(geom)
+            if wb.get("bbox") is None:
+                wb["bbox"] = gb
+            if wb.get("lat") is None:
+                wb["lat"] = glat
+            if wb.get("lon") is None:
+                wb["lon"] = glon
+
+
+def load_decadal_frame(path: Path, registry: Dict[str, dict]) -> pd.DataFrame:
+    """Читает полный декадный ряд satellite_decadal.parquet (включая лёд, облака и 1-шаговую интерполяцию)."""
+    path = Path(path)
+    df = pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
+    if "water_body_id" not in df.columns or "date" not in df.columns:
+        raise IntegrationError(f"В {path.name} нет столбцов 'water_body_id' и 'date'")
+    df = df.copy()
+    df["water_body_id"] = df["water_body_id"].astype(str)
+    df = df[df["water_body_id"].isin(set(registry))]
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    return df.sort_values(["water_body_id", "date"]).reset_index(drop=True)
+
+
+CHL_COLUMNS = ["chl_a_est_current", "chl_a_est_ug_l", "chl_a", "chl_a_current", "chl_a_mean", "chl_a_now", "chlorophyll_a", "chl"]
 LAB_CHL_COLUMNS = ["chl_a_lab_ug_l", "chl_a_lab", "chl_a_measured", "chl_a_lab_current",
                    "chl_a_lab_mean", "lab_chl_a", "chl_a", "chl"]
 DATE_COLUMNS = ["date", "sample_date", "obs_date", "date_used"]
@@ -190,16 +285,44 @@ class RealDataProvider:
     def _source(self, row) -> str:
         return MODE_SOURCE[self.mode]
 
+    @staticmethod
+    def _str_first(row, keys) -> Optional[str]:
+        for k in keys:
+            v = row.get(k)
+            if v is not None and not (isinstance(v, float) and math.isnan(v)) and not pd.isna(v):
+                s = str(v).strip()
+                if s:
+                    return s
+        return None
+
+    @staticmethod
+    def _num_first(row, keys) -> Optional[float]:
+        for k in keys:
+            v = _num(row.get(k))
+            if v is not None:
+                return v
+        return None
+
     def row_meta(self, row) -> dict:
         status = self._status(row)
         return dict(
             date=row["date"], obs_status=status, is_interpolated=self._is_interpolated(row, status),
             chl_a_current=_num(row[self.chl_col]),
-            temp_mean_14d=_num(row.get("temp_mean_14d")), calm_fraction_7d=_num(row.get("calm_fraction_7d")),
+            tsi_current=self._num_first(row, ("tsi_current", "tsi_est")),
+            ndci_current=self._num_first(row, ("ndci_current", "ndci", "s2_ndci")),
+            b04_b02_ratio=self._num_first(row, ("b04_b02_ratio_current", "b04_b02_ratio", "s2_b04_b02_ratio")),
+            temp_mean_14d=_num(row.get("temp_mean_14d")),
+            calm_fraction_7d=_num(row.get("calm_fraction_7d")),
+            precip_sum_14d=_num(row.get("precip_sum_14d")),
+            wind_mean_7d=_num(row.get("wind_mean_7d")),
+            radiation_mean_7d=_num(row.get("radiation_mean_7d")),
+            secchi_depth_m=_num(row.get("secchi_depth_m")),
+            total_phosphorus_ug_l=_num(row.get("total_phosphorus_ug_l")),
+            water_coverage_pct=_num(row.get("water_coverage_pct")),
             scenes_in_decade=_int(row.get("scenes_in_decade")),
             valid_water_pixels=_int(row.get("valid_water_pixels")),
-            scene_id=(None if row.get("scene_id") is None or pd.isna(row.get("scene_id")) else str(row.get("scene_id"))),
-            source_note=(None if row.get("source_note") is None or pd.isna(row.get("source_note")) else str(row.get("source_note"))),
+            scene_id=self._str_first(row, ("scene_id", "last_scene_id")),
+            source_note=self._str_first(row, ("source_note",)),
             source=self._source(row))
 
     def get_features(self, wb_id: str, d: date) -> Optional[dict]:

@@ -19,6 +19,7 @@ from typing import List, Optional
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from src.api import adapters, config, pipeline
@@ -48,6 +49,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Мониторинг эвтрофикации водоёмов РБ", version="1.0.0", lifespan=lifespan)
 # CORS: панель, открытая как файл, обращается к API; POST нужен для загрузки лабораторной пробы
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"])
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
 @app.get("/")
@@ -73,6 +75,17 @@ def lakes(request: Request):
 @app.get("/water-bodies", response_model=List[WaterBodyInfo], include_in_schema=False)
 def water_bodies(request: Request):
     return lakes(request)
+
+
+@app.get("/timeline")
+def timeline_endpoint(request: Request,
+                      mode: Mode = Query(Mode.satellite, description="satellite | lab")):
+    """Полная линия времени 2018–2026 по всем водоёмам для плавной интерактивной карты."""
+    c = comps(request)
+    try:
+        return pipeline.timeline(c, mode.value)
+    except adapters.ModeUnavailable as e:
+        raise HTTPException(404, str(e))
 
 
 @app.get("/metrics")

@@ -27,8 +27,18 @@ def test_all():
         assert c.get("/dashboard/style.css").status_code == 200
         js = c.get("/dashboard/app.js")
         assert js.status_code == 200
-        for ep in ("/lakes", "/predict/", "/history/", "/metrics", "/lab/upload"):
+        for ep in ("/lakes", "/timeline", "/predict/", "/history/", "/metrics", "/lab/upload"):
             assert ep in js.text, ep
+
+        # линия времени: декады, годы и снимки по всем водоёмам
+        tl = c.get("/timeline").json()
+        assert tl["mode"] == "satellite" and tl["dates"] and tl["years"]
+        assert tl["default_date"] in tl["snapshots"]
+        assert "naroch" in tl["snapshots"][tl["default_date"]]
+        tl_lab = c.get("/timeline", params={"mode": "lab"}).json()
+        assert tl_lab["mode"] == "lab" and tl_lab["dates"]
+        assert c.get("/timeline", params={"mode": "bogus"}).status_code == 422
+
         assert c.get("/predict/zaslavskoe", params={"date": "2025-07-11"}).json()["alert_level"] == "RED"
         assert c.get("/predict/naroch", params={"date": "2025-07-11"}).json()["alert_level"] == "YELLOW"
         r = c.get("/predict/naroch", params={"date": "2025-05-21"}).json()
@@ -87,3 +97,44 @@ def test_lab_upload():
         assert c.post("/lab/upload", json={**body, "chl_a_lab_ug_l": 5000}).status_code == 422
         assert c.post("/lab/upload", json={**body, "sample_date": "2025-08-02"}).status_code == 200
         assert c.post("/lab/upload", json={**body, "water_body_id": "nope"}).status_code == 404
+
+
+def test_registry_filtering_and_geojson_hydration(tmp_path):
+    """Отключённые (enabled: false) озёра исключаются; lat/lon/bbox дозаполняются из lakes.geojson."""
+    import json
+    from src.api import adapters
+
+    reg_path = tmp_path / "water_bodies.yaml"
+    reg_path.write_text(
+        "water_bodies:\n"
+        "  - id: active_lake\n"
+        "    name_ru: Активное озеро\n"
+        "    enabled: true\n"
+        "    ecological_context:\n"
+        "      protected_area: ООПТ\n"
+        "      chemical_treatment_allowed: false\n"
+        "      cascade_outflow_to: naroch\n"
+        "  - id: excluded_lake\n"
+        "    name_ru: Исключённое озеро\n"
+        "    enabled: false\n",
+        encoding="utf-8",
+    )
+    geo_path = tmp_path / "lakes.geojson"
+    geo_path.write_text(json.dumps({
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "properties": {"id": "active_lake", "center_lat": 54.85, "center_lon": 26.78,
+                           "bbox": [26.70, 54.80, 26.85, 54.90]},
+            "geometry": {"type": "Polygon", "coordinates": [[[26.7, 54.8], [26.85, 54.8], [26.85, 54.9], [26.7, 54.8]]]},
+        }],
+    }), encoding="utf-8")
+
+    reg = adapters.load_registry(reg_path)
+    assert list(reg.keys()) == ["active_lake"]
+    assert reg["active_lake"]["chemical_treatment_allowed"] is False
+    assert reg["active_lake"]["cascade_outflow_to"] == "naroch"
+    adapters.hydrate_registry_geometry(reg, geo_path)
+    assert reg["active_lake"]["lat"] == 54.85 and reg["active_lake"]["lon"] == 26.78
+    assert reg["active_lake"]["bbox"]["min_lon"] == 26.7
+    assert reg["active_lake"]["geometry"]["type"] == "Polygon"

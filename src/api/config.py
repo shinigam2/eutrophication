@@ -48,6 +48,11 @@ METRICS_CANDIDATES = [f"{d}model_metrics.json"
 QUALITY_CANDIDATES = ["data/interim/data_quality_report.json", "data/processed/data_quality_report.json",
                       "data/data_quality_report.json", "data_quality_report.json"]
 GEOMETRY_CANDIDATES = ["data/reference/lakes.geojson", "lakes.geojson", "data/lakes.geojson"]
+DECADAL_CANDIDATES = [
+    "data/interim/satellite_decadal.parquet",
+    "data/interim/satellite_decadal.csv",
+    "data/processed/satellite_decadal.parquet",
+]
 ONTOLOGY_CANDIDATES = ["src/knowledge_graph/ontology.ttl", "ontology.ttl", "data/ontology.ttl"]
 LAB_CSV_CANDIDATES = ["data/lab/lab_measurements.csv", "lab_measurements.csv", "data/lab_measurements.csv"]
 ENGINE_MODULE = os.environ.get("WATER_ENGINE_MODULE", "src.knowledge_graph.graph_engine")
@@ -80,6 +85,7 @@ def find_metrics():   return _find("WATER_METRICS", METRICS_CANDIDATES)
 def find_quality():   return _find("WATER_QUALITY", QUALITY_CANDIDATES)
 def find_ontology():  return _find("WATER_ONTOLOGY", ONTOLOGY_CANDIDATES)
 def find_geometry():  return _find("WATER_GEOMETRY", GEOMETRY_CANDIDATES)
+def find_decadal():   return _find("WATER_DECADAL", DECADAL_CANDIDATES)
 
 
 def find_lab_csv(for_write: bool = False):
@@ -91,10 +97,10 @@ def find_lab_csv(for_write: bool = False):
 
 
 def part1_fingerprint():
-    """(путь, время изменения) реестра, витрин, полигонов и отчёта качества:
+    """(путь, время изменения) реестра, витрин, полигонов, декад и отчёта качества:
     по ним определяем, что добавлено озеро или обновились данные."""
     paths = (find_registry(), find_features("satellite"), find_features("lab"),
-             find_geometry(), find_quality())
+             find_geometry(), find_decadal(), find_quality())
     return tuple((str(p), p.stat().st_mtime_ns) if p else None for p in paths)
 
 
