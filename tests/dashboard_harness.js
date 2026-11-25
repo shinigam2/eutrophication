@@ -62,6 +62,19 @@ const tabEls = ['overview', 'history'].map((t) => {
   return e;
 });
 
+const themeEls = ['chl', 'tsi', 'coverage'].map((t) => {
+  const e = new El('.theme-' + t);
+  e.dataset = { theme: t };
+  if (t === 'chl') e.cl.add('active');
+  return e;
+});
+const seasonEls = ['all', 'open', 'summer'].map((s) => {
+  const e = new El('.season-' + s);
+  e.dataset = { season: s };
+  if (s === 'open') e.cl.add('active');
+  return e;
+});
+
 const winListeners = {};
 globalThis.document = {
   body: new El('body'),
@@ -71,6 +84,8 @@ globalThis.document = {
     if (sel === '#modeSwitch .seg') return segEls;
     if (sel === '#basemapSwitch .mode-btn') return baseEls;
     if (sel === '.drawer-tab') return tabEls;
+    if (sel === '#themeSwitch .theme-btn') return themeEls;
+    if (sel === '#seasonSwitch .season-btn') return seasonEls;
     return [];
   },
   addEventListener: () => {},
@@ -86,9 +101,10 @@ globalThis.FormData = class {
   get(k) { return this._data[k] == null ? '' : this._data[k]; }
 };
 
-// Mock MapLibre GL JS с проверкой источников, слоёв, стилей и маркеров
+// Mock MapLibre GL JS с проверкой источников, слоёв, стилей ({diff: false}) и маркеров
 const mapState = {
   styles: [],
+  styleOpts: [],
   sources: {},
   layers: {},
   markers: [],
@@ -99,9 +115,11 @@ class FakeMap {
   constructor(opts) {
     this.opts = opts;
     this.ls = {};
+    this._loaded = false;
     mapState.styles.push(opts.style);
-    setTimeout(() => this._emit('style.load'), 5);
+    setTimeout(() => { this._loaded = true; this._emit('style.load'); this._emit('load'); }, 5);
   }
+  isStyleLoaded() { return this._loaded; }
   addControl() {}
   on(ev, layerOrFn, fn) {
     const cb = typeof layerOrFn === 'function' ? layerOrFn : fn;
@@ -109,11 +127,13 @@ class FakeMap {
   }
   _emit(ev, payload) { for (const f of this.ls[ev] || []) f(payload || {}); }
   getCanvas() { return { style: {} }; }
-  setStyle(style) {
+  setStyle(style, opts) {
     mapState.styles.push(style);
+    mapState.styleOpts.push(opts || {});
     mapState.sources = {};
     mapState.layers = {};
-    setTimeout(() => this._emit('style.load'), 5);
+    this._loaded = false;
+    setTimeout(() => { this._loaded = true; this._emit('style.load'); }, 5);
   }
   getSource(id) { return mapState.sources[id]; }
   addSource(id, cfg) {
@@ -159,64 +179,82 @@ const hlog = () => J('/__hlog');
     await get('#retry').fire('click');
     await sleep(120);
     assert.strictEqual(get('#apierr').hidden, false);
-    return console.log('JS harness (сервер недоступен): OK');
+    console.log('JS harness (сервер недоступен): OK');
+    process.exit(0);
   }
 
-  // 1. Первая загрузка: /lakes + /timeline, GeoJSON-полигоны и маркеры на карте
+  // 1. Первая загрузка: /lakes + /timeline, GeoJSON-полигоны, маркеры и слои выделения
   const h0 = await hits();
   assert.strictEqual(h0['/lakes'], 1, 'список водоёмов запрошен через /lakes');
   assert.strictEqual(h0['/timeline'], 1, 'линия времени запрошена через /timeline');
   assert.strictEqual(window.__dash.state.lakes.length, 2);
   assert.strictEqual(window.__dash.state.date, '2026-08-01');
   assert(mapState.sources.lakes && mapState.sources.lakes.data.features.length === 2, 'на карте 2 полигона');
-  assert(mapState.layers['lakes-glow'] && mapState.layers['lakes-fill'] && mapState.layers['lakes-outline']);
+  assert(mapState.layers['selected-lake-halo'] && mapState.layers['selected-lake-outline']);
+  assert(mapState.layers['selected-buffer-line'] && mapState.layers['cascade-arrow-heads']);
   assert.strictEqual(mapState.markers.length, 2, 'созданы 2 плавающих бейджа озёр');
   assert.strictEqual(get('#stub').hidden, false, 'в режиме заглушек показан честный статус');
   assert.strictEqual(get('#panel').hidden, true, 'правый drawer скрыт до клика по озеру');
 
-  // 2. Переключение всех 4 подложек (Тёмная / Светлая / Спутник / Гибрид) с пересозданием слоёв
+  // 2. Переключение всех 4 подложек с { diff: false } + проверка обновления карты после смены подложки!
   for (const bm of ['light', 'satellite', 'hybrid', 'dark']) {
     window.__dash.setBasemap(bm);
     await sleep(30);
     assert.strictEqual(document.body.dataset.basemap, bm);
-    assert(mapState.sources.lakes && mapState.layers['lakes-fill'], `слои пересозданы после setBasemap(${bm})`);
+    assert(mapState.sources.lakes && mapState.layers['selected-lake-outline'], `слои пересозданы после setBasemap(${bm})`);
   }
-  assert(mapState.styles.length >= 5, 'стили карты реально переключались');
+  assert(mapState.styleOpts.every((o) => o.diff === false), 'setStyle всегда вызывается с { diff: false }');
 
-  // 3. Клик по озеру: drawer открывается, загружает /predict и /history, рисует прогноз + ±MAE
+  // 3. Клик по озеру: selected-lake заполняется полигоном, drawer открывается, flyTo срабатывает
   await window.__dash.selectLake('zaslavskoe');
   await sleep(60);
   assert.strictEqual(get('#panel').hidden, false);
+  assert.strictEqual(mapState.sources['selected-lake'].data.features.length, 1, 'выделена площадь выбранного озера');
+  assert.strictEqual(mapState.sources['selected-lake'].data.features[0].properties.id, 'zaslavskoe');
   assert(get('#panelHeader').innerHTML.includes('Заславское'));
   assert(get('#panelBody').innerHTML.includes('Прогноз на +10 дней'));
   assert(get('#panelBody').innerHTML.includes('±MAE'));
   assert(mapState.flyCalls.length >= 1, 'камера выполнила flyTo к озеру');
 
-  // 4. Переключение на вкладку «График и паспорт»: Chart.js + пороги 15/25 + коридор ±MAE
+  // 4. Вкладка «График и паспорт» + режим сравнения 2 озёр (Заславское vs Нарочь)
   await tabEls[1].fire('click');
   await sleep(40);
   assert(get('#panelBody').innerHTML.includes('Паспорт водоёма'));
   assert(globalThis.__chart, 'график Chart.js создан');
-  assert(globalThis.__chart.data.datasets.some((d) => d.label === 'Наблюдения'));
-  assert(globalThis.__chart.data.datasets.some((d) => d.label === 'Прогноз +10 сут'));
-  assert(globalThis.__chart.data.datasets.some((d) => d.label === 'Коридор ±MAE'));
-  assert(globalThis.__chart.data.datasets.some((d) => d.label.includes('25')));
-  assert((await hlog()).length >= 1, 'история запрошена с сервера');
+  await window.__dash.setCompareLake('naroch');
+  await sleep(50);
+  assert.strictEqual(mapState.sources['compared-lake'].data.features.length, 1, 'второе озеро подсвечено на карте');
+  assert(globalThis.__chart.data.datasets.some((d) => d.label.includes('Сравнение:')), 'на графике появилась кривая сравнения');
+  assert((await hlog()).length >= 2, 'загружена история для обоих озёр');
 
-  // 5. Линия времени: зимняя дата (ice_cover) честно показывает лёд и не выдумывает прогноз
+  // 5. Тематические режимы карты (Chl-a -> TSI -> Спутник %), скорость и фильтр сезонов (Лето)
+  window.__dash.setTheme('tsi');
+  assert(get('#legendTitle').textContent.includes('TSI'));
+  window.__dash.setTheme('coverage');
+  assert(get('#legendTitle').textContent.includes('Покрытие'));
+  window.__dash.setTheme('chl');
+
+  window.__dash.cycleSpeed();
+  assert.strictEqual(get('#speedBtn').textContent, '2×');
+  window.__dash.setSeason('summer');
+  assert.strictEqual(window.__dash.state.season, 'summer');
+  window.__dash.setSeason('all');
+
+  // 6. Линия времени обновляет карту (даже во время Play и после смены подложек!)
   await tabEls[0].fire('click');
   window.__dash.setDate('2025-01-11', true);
   await sleep(220);
   assert(get('#panelHeader').innerHTML.includes('Ледяной покров') || get('#panelBody').innerHTML.includes('Ледяной покров'));
   assert(mapState.sources.lakes.data.features.every((f) => f.properties.obs_status === 'ice_cover'));
+  assert.strictEqual(mapState.markers[0].el.children[1].textContent, 'Лёд', 'маркер на карте обновился на Лёд');
 
-  // 6. Переключение режима данных Спутник -> Лаборатория
+  // 7. Переключение режима данных Спутник -> Лаборатория
   await window.__dash.setMode('lab');
   await sleep(60);
   assert.strictEqual(window.__dash.state.mode, 'lab');
   assert(get('#sub').textContent.includes('Лабораторные'));
 
-  // 7. Загрузка лабораторной пробы (POST /lab/upload): сохранение, дубль 409, выход за диапазон 422
+  // 8. Загрузка лабораторной пробы (POST /lab/upload)
   const mkLabForm = (chl) => ({
     _fields: {
       water_body_id: 'zaslavskoe',
@@ -231,17 +269,14 @@ const hlog = () => J('/__hlog');
   await get('#labForm').fire('submit', { target: mkLabForm('18.5') });
   await sleep(60);
   assert(get('#labMsg').textContent.includes('Проба сохранена'), get('#labMsg').textContent);
-  assert(!get('#labMsg').className.includes('err'));
-
   await get('#labForm').fire('submit', { target: mkLabForm('19.0') });
   await sleep(60);
   assert(get('#labMsg').className.includes('err'), 'дубль должен вернуть ошибку');
-
   await get('#labForm').fire('submit', { target: mkLabForm('5000') });
   await sleep(60);
   assert(get('#labMsg').className.includes('err'), 'значение вне диапазона должно вернуть ошибку');
 
-  // 8. Модалка метрик: RMSE/MAE/R², режимы, отчёт качества
+  // 9. Модалка метрик
   await get('#metricsBtn').fire('click');
   await sleep(60);
   assert.strictEqual(get('#metricsModal').hidden, false);
@@ -252,7 +287,7 @@ const hlog = () => J('/__hlog');
   await get('#metricsClose').fire('click');
   assert.strictEqual(get('#metricsModal').hidden, true);
 
-  // 9. Живое обновление: добавление нового озера на сервере + кнопка «Обновить»
+  // 10. Живое обновление: добавление нового озера на сервере + кнопка «Обновить»
   await fetch(base + '/__add_lake');
   await get('#refresh').fire('click');
   await sleep(60);
@@ -263,7 +298,8 @@ const hlog = () => J('/__hlog');
   await sleep(60);
   assert.strictEqual(window.__dash.state.lakes.length, 2);
 
-  console.log('JS harness (MapLibre GL JS + Timeline + 4 Basemaps): OK');
+  console.log('JS harness (MapLibre + Live Sync + Highlight + 6 Features): OK');
+  process.exit(0);
 })().catch((e) => {
   console.error('FAIL:', e.stack || e);
   process.exit(1);

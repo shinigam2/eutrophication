@@ -943,8 +943,45 @@ body {
 }
 
 .legend-foot {
-  padding-top: 5px;
+  padding-top: 6px;
   border-top: 1px solid var(--glass-border);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.theme-switch {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+  background: rgba(15, 23, 42, 0.72);
+  padding: 2px;
+  border-radius: 9px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.theme-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 4px 5px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.theme-btn:hover {
+  color: var(--text-primary);
+}
+
+.theme-btn.active {
+  background: rgba(34, 211, 238, 0.18);
+  color: #e0f2fe;
+  box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.36);
 }
 
 .cascade-toggle {
@@ -968,6 +1005,12 @@ body {
   border-top: 2px dashed #67e8f9;
 }
 
+.buffer-dash {
+  width: 16px;
+  height: 0;
+  border-top: 2px dotted #22d3ee;
+}
+
 /* Bottom-Center Chronas Timeline Bar */
 .timeline-bar {
   position: absolute;
@@ -975,8 +1018,8 @@ body {
   left: 50%;
   transform: translateX(-50%);
   z-index: 20;
-  width: min(740px, calc(100vw - 496px));
-  min-width: 440px;
+  width: min(780px, calc(100vw - 510px));
+  min-width: 480px;
   padding: 10px 14px;
   border-radius: 16px;
   display: flex;
@@ -987,7 +1030,7 @@ body {
 .timeline-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
 }
 
 .play-btn {
@@ -1013,6 +1056,27 @@ body {
   background: var(--accent-cyan);
   color: #070b12;
   box-shadow: 0 0 16px rgba(34, 211, 238, 0.45);
+}
+
+.speed-btn {
+  height: 30px;
+  min-width: 34px;
+  padding: 0 7px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.65);
+  color: var(--accent-cyan);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.speed-btn:hover {
+  border-color: rgba(34, 211, 238, 0.45);
+  background: rgba(34, 211, 238, 0.14);
 }
 
 .step-group {
@@ -1043,7 +1107,7 @@ body {
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 2px;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -1054,14 +1118,14 @@ body {
 
 .epoch-btn {
   flex: 1;
-  min-width: 42px;
+  min-width: 38px;
   border: none;
   background: transparent;
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 500;
-  padding: 5px 4px;
+  padding: 5px 3px;
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -1079,24 +1143,39 @@ body {
   box-shadow: 0 0 14px rgba(34, 211, 238, 0.45);
 }
 
-.season-toggle {
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  background: rgba(15, 23, 42, 0.65);
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-  padding: 6px 9px;
+.season-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(15, 23, 42, 0.7);
+  padding: 2px;
   border-radius: 9px;
-  cursor: pointer;
+  border: 1px solid rgba(148, 163, 184, 0.14);
   flex-shrink: 0;
+}
+
+.season-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 5px 7px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
   transition: all 0.15s ease;
 }
 
-.season-toggle.active {
-  background: rgba(52, 211, 153, 0.16);
+.season-btn:hover {
+  color: var(--text-primary);
+}
+
+.season-btn.active {
+  background: rgba(52, 211, 153, 0.18);
   color: #a7f3d0;
-  border-color: rgba(52, 211, 153, 0.38);
+  box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.36);
 }
 
 .timeline-slider-row {
@@ -1187,17 +1266,69 @@ input[type='range'].gis-slider::-webkit-slider-thumb:hover {
   text-overflow: ellipsis;
 }
 
-/* Custom Floating Lake Badges on Map (exact ИГИСИТ look) */
+/* Trend delta badges & comparison toolbar */
+.delta-pill {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.delta-pill.up {
+  background: rgba(251, 113, 133, 0.18);
+  color: #fda4af;
+}
+
+.delta-pill.down {
+  background: rgba(52, 211, 153, 0.18);
+  color: #6ee7b7;
+}
+
+.delta-pill.flat {
+  background: rgba(148, 163, 184, 0.14);
+  color: #cbd5e1;
+}
+
+.chart-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.export-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(34, 211, 238, 0.34);
+  background: rgba(34, 211, 238, 0.12);
+  color: #cffafe;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.export-btn:hover {
+  background: rgba(34, 211, 238, 0.24);
+}
+
+/* Custom Floating Lake Badges on Map (exact ИГИСИТ look + trend arrows & selection pulse) */
 .lake-marker-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   padding: 3px 8px;
   border-radius: 999px;
-  background: rgba(7, 11, 18, 0.84);
+  background: rgba(7, 11, 18, 0.86);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(148, 163, 184, 0.24);
+  border: 1px solid rgba(148, 163, 184, 0.26);
   color: #e2e8f0;
   font-family: var(--font-sans);
   font-size: 11px;
@@ -1205,18 +1336,43 @@ input[type='range'].gis-slider::-webkit-slider-thumb:hover {
   cursor: pointer;
   white-space: nowrap;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
-  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: transform 0.15s ease, border-color 0.2s ease, box-shadow 0.2s ease;
   transform: translateY(-10px);
 }
 
 .lake-marker-pill:hover {
-  transform: translateY(-13px) scale(1.03);
+  transform: translateY(-13px) scale(1.04);
+}
+
+.lake-marker-pill.selected {
+  background: rgba(11, 18, 32, 0.96);
+  border-width: 1.5px;
+  transform: translateY(-13px) scale(1.06);
+}
+
+.lake-marker-pill.compared {
+  border-color: #e879f9 !important;
+  box-shadow: 0 0 14px rgba(232, 121, 249, 0.5) !important;
 }
 
 .lake-marker-val {
   font-family: var(--font-mono);
   font-size: 10.5px;
   font-weight: 700;
+}
+
+.lake-marker-trend {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.lake-marker-trend.up {
+  color: #fb7185;
+}
+
+.lake-marker-trend.down {
+  color: #34d399;
 }
 
 /* Hover Tooltip */
@@ -1230,7 +1386,7 @@ input[type='range'].gis-slider::-webkit-slider-thumb:hover {
   backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border-hover);
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
-  min-width: 185px;
+  min-width: 195px;
 }
 
 .tooltip-title {
@@ -1470,13 +1626,13 @@ input[type='range'].gis-slider::-webkit-slider-thumb:hover {
 }
 
 /* Responsive */
-@media (max-width: 1240px) {
+@media (max-width: 1120px) {
   .legend-pill {
     display: none;
   }
   .timeline-bar {
-    width: min(700px, calc(100vw - 110px));
-    min-width: 300px;
+    width: min(740px, calc(100vw - 110px));
+    min-width: 320px;
   }
 }
 

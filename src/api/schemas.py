@@ -32,6 +32,7 @@ class WaterBodyInfo(BaseModel):
     lon: Optional[float] = None
     bbox: Optional[BBox] = None
     geometry: Optional[dict] = Field(None, description="Полигон озера (GeoJSON Polygon/MultiPolygon)")
+    buffer_geometry: Optional[dict] = Field(None, description="Внутренний буфер −25 м от берега и островов для расчёта Sentinel-2")
     # паспорт водоёма (из configs/water_bodies.yaml)
     group: Optional[str] = None
     basin: Optional[str] = None

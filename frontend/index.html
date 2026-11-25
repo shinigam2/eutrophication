@@ -115,8 +115,13 @@
       <div id="panelBody" class="drawer-body" aria-live="polite"></div>
     </aside>
 
-    <!-- Нижняя левая компактная легенда и статистика по дате -->
-    <section class="legend-pill glass-panel" aria-label="Легенда и сводка">
+    <!-- Нижняя левая компактная легенда, тематический слой и переключатели -->
+    <section class="legend-pill glass-panel" aria-label="Легенда и тематический слой">
+      <div class="theme-switch" id="themeSwitch" role="group" aria-label="Раскраска озёр на карте">
+        <button type="button" class="theme-btn active" data-theme="chl" title="Раскраска по хлорофиллу-а и риску цветения">Chl-a</button>
+        <button type="button" class="theme-btn" data-theme="tsi" title="Классический индекс трофности Карлсона (TSI)">TSI</button>
+        <button type="button" class="theme-btn" data-theme="coverage" title="Доля чистых водных пикселей Sentinel-2 (%)">Спутник %</button>
+      </div>
       <div class="legend-head">
         <span id="legendTitle" class="section-label">Состояние озёр</span>
         <span id="upd" class="legend-sync"></span>
@@ -128,6 +133,11 @@
           <span class="cascade-dash"></span>
           <span>Каскадный сток</span>
         </label>
+        <label class="cascade-toggle">
+          <input type="checkbox" id="bufferToggle" checked>
+          <span class="buffer-dash"></span>
+          <span>Буфер −25 м (Sentinel-2)</span>
+        </label>
       </div>
     </section>
 
@@ -138,6 +148,8 @@
           <svg id="playIcon" viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>
         </button>
 
+        <button type="button" id="speedBtn" class="speed-btn" title="Скорость воспроизведения (1× / 2× / 4×)">1×</button>
+
         <div class="step-group">
           <button type="button" id="prev" class="step-btn" title="Предыдущая декада (←)" aria-label="Предыдущая декада">‹</button>
           <button type="button" id="next" class="step-btn" title="Следующая декада (→)" aria-label="Следующая декада">›</button>
@@ -145,9 +157,11 @@
 
         <div id="yearTrack" class="epoch-track" role="group" aria-label="Быстрый переход по годам"></div>
 
-        <button type="button" id="openWaterToggle" class="season-toggle active" title="Пропускать зимние ледовые декады при проигрывании">
-          <span>IV–XI</span>
-        </button>
+        <div class="season-switch" id="seasonSwitch" role="group" aria-label="Фильтр сезонов линии времени">
+          <button type="button" class="season-btn" data-season="all" title="Все 12 месяцев, включая зимний ледостав">Год</button>
+          <button type="button" class="season-btn active" data-season="open" title="Открытая вода (апрель–ноябрь)">IV–XI</button>
+          <button type="button" class="season-btn" data-season="summer" title="Только летние пики цветения (июнь–сентябрь)">Лето</button>
+        </div>
       </div>
 
       <div class="timeline-slider-row">

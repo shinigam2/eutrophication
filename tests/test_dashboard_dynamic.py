@@ -161,7 +161,7 @@ class H(BaseHTTPRequestHandler):
 
 
 FRONT = Path(__file__).resolve().parents[1] / "frontend"
-DYNAMIC_IDS = {"drawerClose", "chart", "histWin"}            # создаются панелью по ходу работы
+DYNAMIC_IDS = {"drawerClose", "chart", "histWin", "compareSelect", "exportCsvBtn"}  # создаются панелью по ходу работы
 
 
 def check_files():

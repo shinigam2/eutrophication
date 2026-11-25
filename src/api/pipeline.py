@@ -526,6 +526,7 @@ def timeline(c: dict, mode: str = "satellite") -> dict:
                     alert_val = "YELLOW"
                 else:
                     alert_val = "GREEN"
+            cov = m.get("water_coverage_pct")
             feat_lookup[(wb_id, ds)] = {
                 "s": status,
                 "c": None if chl is None else round(chl, 2),
@@ -535,6 +536,8 @@ def timeline(c: dict, mode: str = "satellite") -> dict:
                 "a": alert_val,
                 "t14": None if m.get("temp_mean_14d") is None else round(m["temp_mean_14d"], 1),
                 "clm": None if m.get("calm_fraction_7d") is None else round(m["calm_fraction_7d"], 2),
+                "cov": None if cov is None else round(cov, 0),
+                "dc": None,
             }
 
     dec = c.get("decadal_df") if (mode == "satellite" and not demo) else None
@@ -544,10 +547,13 @@ def timeline(c: dict, mode: str = "satellite") -> dict:
             ds = row["date"].isoformat()
             status = None if pd.isna(row.get("obs_status")) else str(row.get("obs_status"))
             status = status or "valid"
+            cov = adapters._num(row.get("water_coverage_pct"))
             base = feat_lookup.get((wb_id, ds))
             if base is not None:
                 snap = dict(base)
                 snap["s"] = status
+                if snap.get("cov") is None and cov is not None:
+                    snap["cov"] = round(cov, 0)
             else:
                 chl = None if status in NO_OBSERVATION else adapters._num(row.get("chl_a_est_ug_l"))
                 tsi_raw = None if status in NO_OBSERVATION else adapters._num(row.get("tsi_est"))
@@ -561,6 +567,8 @@ def timeline(c: dict, mode: str = "satellite") -> dict:
                     "a": None,
                     "t14": None,
                     "clm": None,
+                    "cov": None if cov is None else round(cov, 0),
+                    "dc": None,
                 }
             snapshots.setdefault(ds, {})[wb_id] = snap
     else:
@@ -568,6 +576,17 @@ def timeline(c: dict, mode: str = "satellite") -> dict:
             snapshots.setdefault(ds, {})[wb_id] = snap
 
     dates = sorted(snapshots.keys())
+    # Рассчитываем честную дельту (dc) относительно предыдущего валидного наблюдения для каждого озера
+    prev_chl: Dict[str, float] = {}
+    for ds in dates:
+        day_map = snapshots[ds]
+        for wb_id, snap in day_map.items():
+            c_val = snap.get("c")
+            if c_val is not None:
+                if wb_id in prev_chl:
+                    snap["dc"] = round(c_val - prev_chl[wb_id], 1)
+                prev_chl[wb_id] = c_val
+
     years = sorted({int(d[:4]) for d in dates})
     default_iso = config.DEFAULT_DATE.isoformat()
     if default_iso in snapshots:

@@ -31,6 +31,24 @@
     insufficient_pixels: 'Недостаточно пикселей воды',
   };
 
+  const SPEEDS = [
+    { label: '1×', ms: 500 },
+    { label: '2×', ms: 240 },
+    { label: '4×', ms: 110 },
+  ];
+
+  const DASH_SEQUENCE = [
+    [0, 2, 2.5],
+    [0.5, 2, 2],
+    [1.0, 2, 1.5],
+    [1.5, 2, 1.0],
+    [2.0, 2, 0.5],
+    [2.5, 2, 0],
+    [0, 0.5, 2.5, 1.5],
+    [0, 1.0, 2.5, 1.0],
+    [0, 1.5, 2.5, 0.5],
+  ];
+
   const FALLBACK_STYLE = {
     version: 8,
     sources: {},
@@ -99,12 +117,18 @@
     timeline: null,
     mode: 'satellite',
     basemap: 'dark',
+    theme: 'chl',          // 'chl' | 'tsi' | 'coverage'
+    season: 'open',        // 'all' | 'open' | 'summer'
+    speedIdx: 0,           // index in SPEEDS
     date: null,
-    openWaterOnly: true,
     showCascades: true,
+    showBuffer: true,
     playing: false,
     playTimer: null,
+    dashTimer: null,
+    dashStep: 0,
     selected: null,
+    compareId: null,
     activeTab: 'overview',
     histWin: 108,
     pickerOpen: false,
@@ -113,6 +137,7 @@
     historyCache: new Map(),
     activePredict: null,
     activeHistory: null,
+    compareHistory: null,
     predictSeq: 0,
     historySeq: 0,
     debounceTimer: null,
@@ -149,6 +174,62 @@
     if (v == null || Number.isNaN(Number(v))) return '—';
     return `${Number(v).toFixed(digits)}${suffix}`;
   }
+
+  // Smooth RGB color ramp interpolation for vivid, honest real-time visual feedback
+  function hexToRgb(hex) {
+    const h = hex.replace('#', '');
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  }
+
+  function rgbToHex(r, g, b) {
+    const clamp = (n) => Math.max(0, Math.min(255, Math.round(n)));
+    return '#' + [clamp(r), clamp(g), clamp(b)].map((v) => v.toString(16).padStart(2, '0')).join('');
+  }
+
+  function lerpRamp(val, stops) {
+    if (val <= stops[0][0]) return stops[0][1];
+    for (let i = 1; i < stops.length; i += 1) {
+      const [v0, c0] = stops[i - 1];
+      const [v1, c1] = stops[i];
+      if (val <= v1) {
+        const t = (val - v0) / Math.max(1e-6, v1 - v0);
+        const [r0, g0, b0] = hexToRgb(c0);
+        const [r1, g1, b1] = hexToRgb(c1);
+        return rgbToHex(r0 + (r1 - r0) * t, g0 + (g1 - g0) * t, b0 + (b1 - b0) * t);
+      }
+    }
+    return stops[stops.length - 1][1];
+  }
+
+  const CHL_STOPS = [
+    [2.0, '#0ea5e9'],   // глубокий сапфир (ультрачистая вода)
+    [5.0, '#22d3ee'],   // чистый циан
+    [8.5, '#2dd4bf'],   // бирюза
+    [11.5, '#34d399'],  // изумруд
+    [14.2, '#a3e635'],  // лайм (подход к порогу внимания)
+    [16.0, '#fbbf24'],  // янтарь (уровень внимания 15–25)
+    [21.5, '#fb923c'],  // оранжевый
+    [25.5, '#fb7185'],  // кораллово-алый (цветение >=25)
+    [40.0, '#e11d48'],  // малиново-красный (сильная вспышка)
+  ];
+
+  const TSI_STOPS = [
+    [34, '#0ea5e9'],
+    [40, '#22d3ee'],
+    [48, '#34d399'],
+    [54, '#a3e635'],
+    [58, '#fbbf24'],
+    [64, '#fb923c'],
+    [70, '#fb7185'],
+    [80, '#e11d48'],
+  ];
+
+  const COV_STOPS = [
+    [30, '#fb7185'],
+    [50, '#fbbf24'],
+    [70, '#22d3ee'],
+    [95, '#34d399'],
+  ];
 
   async function apiGet(path) {
     const resp = await fetch(API + path);
@@ -214,6 +295,8 @@
         badgeClass: 'badge-muted',
         statusLabel: 'Нет данных',
         shortVal: '—',
+        trend: 0,
+        delta: null,
         category: 'nodata',
         sortScore: -2,
         isForecast: false,
@@ -221,10 +304,12 @@
     }
     if (snap.s === 'ice_cover') {
       return {
-        color: '#7dd3fc',
+        color: '#93c5fd',
         badgeClass: 'badge-ice',
         statusLabel: 'Ледяной покров',
         shortVal: 'Лёд',
+        trend: 0,
+        delta: null,
         category: 'ice',
         sortScore: -1,
         isForecast: false,
@@ -235,26 +320,113 @@
         color: '#64748b',
         badgeClass: 'badge-muted',
         statusLabel: STATUS_RU[snap.s] || 'Нет наблюдения',
-        shortVal: 'Облака',
+        shortVal: S.theme === 'coverage' ? '0%' : 'Облака',
+        trend: 0,
+        delta: null,
         category: 'nodata',
         sortScore: -1.5,
         isForecast: false,
       };
     }
 
+    const dc = snap.dc != null ? Number(snap.dc) : null;
+    const trend = dc == null ? 0 : (dc >= 1.0 ? 1 : (dc <= -1.0 ? -1 : 0));
     const prefix = snap.s === 'interpolated_1step' ? '~' : '';
+
+    // Thematic layer 3: Satellite coverage (%)
+    if (S.theme === 'coverage') {
+      if (snap.s === 'interpolated_1step') {
+        return {
+          color: '#c084fc',
+          badgeClass: 'badge-warn',
+          statusLabel: 'Интерполяция (1 шаг)',
+          shortVal: 'Интерп.',
+          trend: 0,
+          delta: dc,
+          category: 'interp',
+          sortScore: 30,
+          isForecast: false,
+        };
+      }
+      const cov = snap.cov != null ? Number(snap.cov) : (snap.c != null ? 100 : null);
+      if (cov == null) {
+        return {
+          color: '#64748b',
+          badgeClass: 'badge-muted',
+          statusLabel: 'Нет данных',
+          shortVal: '—',
+          trend: 0,
+          delta: dc,
+          category: 'nodata',
+          sortScore: -2,
+          isForecast: false,
+        };
+      }
+      return {
+        color: lerpRamp(cov, COV_STOPS),
+        badgeClass: cov >= 75 ? 'badge-meso' : cov >= 50 ? 'badge-oligo' : 'badge-warn',
+        statusLabel: `Чистой воды: ${Math.round(cov)}%`,
+        shortVal: `${Math.round(cov)}%`,
+        trend: 0,
+        delta: dc,
+        category: cov >= 75 ? 'high' : cov >= 50 ? 'mid' : 'low',
+        sortScore: cov,
+        isForecast: false,
+      };
+    }
+
+    // Thematic layer 2: Carlson Trophic State Index (TSI)
+    if (S.theme === 'tsi') {
+      const tsi = snap.t != null ? Number(snap.t) : null;
+      if (tsi == null) {
+        return {
+          color: '#64748b',
+          badgeClass: 'badge-muted',
+          statusLabel: 'Нет TSI',
+          shortVal: '—',
+          trend: 0,
+          delta: dc,
+          category: 'nodata',
+          sortScore: -2,
+          isForecast: false,
+        };
+      }
+      let statusLabel = 'Эвтрофное (TSI 60–70)';
+      let badgeClass = 'badge-eutro';
+      let category = 'eutro';
+      if (tsi < 40) { statusLabel = 'Олиготрофное (<40)'; badgeClass = 'badge-oligo'; category = 'oligo'; }
+      else if (tsi < 50) { statusLabel = 'Мезотрофное (40–50)'; badgeClass = 'badge-meso'; category = 'meso'; }
+      else if (tsi < 60) { statusLabel = 'Умер. эвтрофное (50–60)'; badgeClass = 'badge-warn'; category = 'meso_eu'; }
+      else if (tsi >= 70) { statusLabel = 'Гиперэвтрофное (≥70)'; badgeClass = 'badge-eutro'; category = 'eutro'; }
+      return {
+        color: lerpRamp(tsi, TSI_STOPS),
+        badgeClass,
+        statusLabel,
+        shortVal: `${prefix}TSI ${tsi.toFixed(0)}`,
+        trend,
+        delta: dc,
+        category,
+        sortScore: tsi,
+        isForecast: false,
+      };
+    }
+
+    // Thematic layer 1 (default): Chlorophyll-a & SanPiN/WHO Risk (with smooth color gradient!)
     const attThr = (lake && lake.attention_ug_l) || 15;
     const bloomThr = (lake && lake.bloom_ug_l) || 25;
 
     if (snap.a) {
-      const val = snap.f != null ? snap.f : snap.c;
-      const shortVal = val != null ? `${prefix}${Number(val).toFixed(1)}` : '—';
+      const val = snap.f != null ? Number(snap.f) : (snap.c != null ? Number(snap.c) : null);
+      const shortVal = val != null ? `${prefix}${val.toFixed(1)}` : '—';
+      const color = val != null ? lerpRamp(val, CHL_STOPS) : (snap.a === 'RED' ? '#fb7185' : snap.a === 'YELLOW' ? '#fbbf24' : '#34d399');
       if (snap.a === 'RED') {
         return {
           color: '#fb7185',
           badgeClass: 'badge-eutro',
           statusLabel: 'Опасность (прогноз)',
           shortVal,
+          trend,
+          delta: dc,
           category: 'red',
           sortScore: 1000 + (val || 0),
           isForecast: true,
@@ -266,16 +438,20 @@
           badgeClass: 'badge-warn',
           statusLabel: 'Внимание (прогноз)',
           shortVal,
+          trend,
+          delta: dc,
           category: 'yellow',
           sortScore: 500 + (val || 0),
           isForecast: true,
         };
       }
       return {
-        color: '#34d399',
+        color,
         badgeClass: 'badge-meso',
         statusLabel: 'Норма (прогноз)',
         shortVal,
+        trend,
+        delta: dc,
         category: 'green',
         sortScore: val || 0,
         isForecast: true,
@@ -288,6 +464,8 @@
         badgeClass: 'badge-muted',
         statusLabel: 'Нет данных',
         shortVal: '—',
+        trend: 0,
+        delta: null,
         category: 'nodata',
         sortScore: -2,
         isForecast: false,
@@ -295,13 +473,16 @@
     }
 
     const c = Number(snap.c);
+    const color = lerpRamp(c, CHL_STOPS);
     const shortVal = `${prefix}${c.toFixed(1)}`;
     if (c >= bloomThr) {
       return {
-        color: '#fb7185',
+        color,
         badgeClass: 'badge-eutro',
-        statusLabel: 'Цветение (факт)',
+        statusLabel: 'Цветение (факт ≥25)',
         shortVal,
+        trend,
+        delta: dc,
         category: 'red',
         sortScore: 1000 + c,
         isForecast: false,
@@ -309,10 +490,12 @@
     }
     if (c >= attThr) {
       return {
-        color: '#fbbf24',
+        color,
         badgeClass: 'badge-warn',
-        statusLabel: 'Внимание (факт)',
+        statusLabel: 'Внимание (факт 15–25)',
         shortVal,
+        trend,
+        delta: dc,
         category: 'yellow',
         sortScore: 500 + c,
         isForecast: false,
@@ -320,20 +503,24 @@
     }
     if (c < 5) {
       return {
-        color: '#22d3ee',
+        color,
         badgeClass: 'badge-oligo',
-        statusLabel: 'Чистая вода (факт)',
+        statusLabel: 'Чистая вода (факт <5)',
         shortVal,
+        trend,
+        delta: dc,
         category: 'green',
         sortScore: c,
         isForecast: false,
       };
     }
     return {
-      color: '#34d399',
+      color,
       badgeClass: 'badge-meso',
-      statusLabel: 'Норма (факт)',
+      statusLabel: 'Норма (факт <15)',
       shortVal,
+      trend,
+      delta: dc,
       category: 'green',
       sortScore: c,
       isForecast: false,
@@ -349,7 +536,14 @@
   function getTimelineDates() {
     if (!S.timeline || !Array.isArray(S.timeline.dates)) return [];
     const all = S.timeline.dates;
-    if (!S.openWaterOnly || S.mode !== 'satellite') return all;
+    if (S.mode !== 'satellite' || S.season === 'all') return all;
+    if (S.season === 'summer') {
+      const summer = all.filter((d) => {
+        const m = Number(d.slice(5, 7));
+        return m >= 6 && m <= 9;
+      });
+      return summer.length ? summer : all;
+    }
     const open = all.filter((d) => {
       const m = Number(d.slice(5, 7));
       if (m >= 4 && m <= 11) return true;
@@ -371,8 +565,25 @@
     return { center: [cx, cy], zoom, pitch: 32, bearing: -8 };
   }
 
+  // Cascade connectivity helper: finds all cascade links & lakes in the same chain as selected lake
+  function getConnectedCascadeSet(lakeId) {
+    const links = (S.timeline && S.timeline.cascade_links) || [];
+    const nodes = new Set();
+    if (!lakeId) return nodes;
+    nodes.add(lakeId);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const lk of links) {
+        if (nodes.has(lk.from) && !nodes.has(lk.to)) { nodes.add(lk.to); changed = true; }
+        if (nodes.has(lk.to) && !nodes.has(lk.from)) { nodes.add(lk.from); changed = true; }
+      }
+    }
+    return nodes.size > 1 ? nodes : new Set();
+  }
+
   // =========================================================================
-  // MapLibre GL JS initialization & 4-basemap switching
+  // MapLibre GL JS initialization, 4-basemap switching & rich highlight layers
   // =========================================================================
   function harmonizeStyle() {
     const map = S.map;
@@ -431,13 +642,75 @@
 
   function buildCascadeFeatureCollection() {
     const links = (S.timeline && S.timeline.cascade_links) || [];
+    const chainNodes = getConnectedCascadeSet(S.selected);
+    const lineFeatures = [];
+    const arrowFeatures = [];
+
+    for (const lk of links) {
+      const isActive = chainNodes.has(lk.from) && chainNodes.has(lk.to);
+      lineFeatures.push({
+        type: 'Feature',
+        properties: { from: lk.from, to: lk.to, label: lk.label, active: isActive ? 1 : 0 },
+        geometry: { type: 'LineString', coordinates: lk.coordinates },
+      });
+
+      // Directional chevron arrow triangle at midpoint pointing downstream (from -> to)
+      if (Array.isArray(lk.coordinates) && lk.coordinates.length >= 2) {
+        const [x0, y0] = lk.coordinates[0];
+        const [x1, y1] = lk.coordinates[lk.coordinates.length - 1];
+        const mx = (x0 + x1) / 2;
+        const my = (y0 + y1) / 2;
+        const cosLat = Math.cos(((y0 + y1) / 2) * (Math.PI / 180));
+        const dx = (x1 - x0) * cosLat;
+        const dy = y1 - y0;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len;
+        const uy = dy / len;
+        const px = -uy;
+        const py = ux;
+        const sz = isActive ? 0.0052 : 0.0040;
+        const tip = [mx + (ux * sz) / cosLat, my + uy * sz];
+        const left = [mx + ((-ux * sz * 0.6 + px * sz * 0.65) / cosLat), my + (-uy * sz * 0.6 + py * sz * 0.65)];
+        const right = [mx + ((-ux * sz * 0.6 - px * sz * 0.65) / cosLat), my + (-uy * sz * 0.6 - py * sz * 0.65)];
+        arrowFeatures.push({
+          type: 'Feature',
+          properties: { active: isActive ? 1 : 0 },
+          geometry: { type: 'Polygon', coordinates: [[tip, left, right, tip]] },
+        });
+      }
+    }
+    return {
+      lines: { type: 'FeatureCollection', features: lineFeatures },
+      arrows: { type: 'FeatureCollection', features: arrowFeatures },
+    };
+  }
+
+  function buildSingleLakeFC(lakeId) {
+    const lake = lakeId ? S.lakesById[lakeId] : null;
+    if (!lake) return { type: 'FeatureCollection', features: [] };
+    const geom = lake.geometry || bboxToPolygon(lake.bbox);
+    if (!geom) return { type: 'FeatureCollection', features: [] };
+    const ev = evalSnapshot(lake, getActiveSnapshot(lake.id));
     return {
       type: 'FeatureCollection',
-      features: links.map((lk) => ({
+      features: [{
         type: 'Feature',
-        properties: { from: lk.from, to: lk.to, label: lk.label },
-        geometry: { type: 'LineString', coordinates: lk.coordinates },
-      })),
+        properties: { id: lake.id, color: ev.color },
+        geometry: geom,
+      }],
+    };
+  }
+
+  function buildSelectedBufferFC() {
+    const lake = S.showBuffer && S.selected ? S.lakesById[S.selected] : null;
+    if (!lake || !lake.buffer_geometry) return { type: 'FeatureCollection', features: [] };
+    return {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        properties: { id: lake.id },
+        geometry: lake.buffer_geometry,
+      }],
     };
   }
 
@@ -447,17 +720,33 @@
 
     const lakesFC = buildLakesFeatureCollection();
     const anchorsFC = buildAnchorsFeatureCollection(lakesFC);
-    const cascadeFC = buildCascadeFeatureCollection();
+    const cascade = buildCascadeFeatureCollection();
+    const selFC = buildSingleLakeFC(S.selected);
+    const cmpFC = buildSingleLakeFC(S.compareId);
+    const bufFC = buildSelectedBufferFC();
     const isImagery = S.basemap === 'satellite' || S.basemap === 'hybrid';
 
-    if (!map.getSource('cascade-flows')) {
-      map.addSource('cascade-flows', { type: 'geojson', data: cascadeFC });
-    }
-    if (!map.getSource('lakes')) {
-      map.addSource('lakes', { type: 'geojson', data: lakesFC });
-    }
-    if (!map.getSource('lake-anchors')) {
-      map.addSource('lake-anchors', { type: 'geojson', data: anchorsFC });
+    if (!map.getSource('cascade-flows')) map.addSource('cascade-flows', { type: 'geojson', data: cascade.lines });
+    if (!map.getSource('cascade-arrows')) map.addSource('cascade-arrows', { type: 'geojson', data: cascade.arrows });
+    if (!map.getSource('lakes')) map.addSource('lakes', { type: 'geojson', data: lakesFC });
+    if (!map.getSource('lake-anchors')) map.addSource('lake-anchors', { type: 'geojson', data: anchorsFC });
+    if (!map.getSource('selected-lake')) map.addSource('selected-lake', { type: 'geojson', data: selFC });
+    if (!map.getSource('compared-lake')) map.addSource('compared-lake', { type: 'geojson', data: cmpFC });
+    if (!map.getSource('selected-buffer')) map.addSource('selected-buffer', { type: 'geojson', data: bufFC });
+
+    if (!map.getLayer('cascade-active-glow')) {
+      map.addLayer({
+        id: 'cascade-active-glow',
+        type: 'line',
+        source: 'cascade-flows',
+        filter: ['==', ['get', 'active'], 1],
+        paint: {
+          'line-color': '#22d3ee',
+          'line-width': 8,
+          'line-blur': 6,
+          'line-opacity': S.showCascades ? 0.55 : 0.0,
+        },
+      });
     }
 
     if (!map.getLayer('cascade-lines')) {
@@ -466,10 +755,22 @@
         type: 'line',
         source: 'cascade-flows',
         paint: {
-          'line-color': '#67e8f9',
-          'line-width': 2.2,
-          'line-dasharray': [2, 2],
-          'line-opacity': S.showCascades ? 0.78 : 0.0,
+          'line-color': ['case', ['==', ['get', 'active'], 1], '#22d3ee', '#67e8f9'],
+          'line-width': ['case', ['==', ['get', 'active'], 1], 3.4, 2.0],
+          'line-dasharray': DASH_SEQUENCE[0],
+          'line-opacity': S.showCascades ? 0.85 : 0.0,
+        },
+      });
+    }
+
+    if (!map.getLayer('cascade-arrow-heads')) {
+      map.addLayer({
+        id: 'cascade-arrow-heads',
+        type: 'fill',
+        source: 'cascade-arrows',
+        paint: {
+          'fill-color': ['case', ['==', ['get', 'active'], 1], '#ffffff', '#67e8f9'],
+          'fill-opacity': S.showCascades ? 0.92 : 0.0,
         },
       });
     }
@@ -483,7 +784,7 @@
           'line-color': ['coalesce', ['get', 'color'], '#22d3ee'],
           'line-width': isImagery ? 8 : 7,
           'line-blur': 6,
-          'line-opacity': isImagery ? 0.56 : 0.40,
+          'line-opacity': isImagery ? 0.52 : 0.38,
         },
       });
     }
@@ -495,7 +796,7 @@
         source: 'lakes',
         paint: {
           'fill-color': ['coalesce', ['get', 'color'], '#22d3ee'],
-          'fill-opacity': isImagery ? 0.36 : 0.74,
+          'fill-opacity': isImagery ? 0.40 : 0.76,
         },
       });
     }
@@ -506,9 +807,93 @@
         type: 'line',
         source: 'lakes',
         paint: {
-          'line-color': ['case', ['==', ['get', 'id'], S.selected || ''], '#ffffff', isImagery ? '#f8fafc' : '#cbd5e1'],
-          'line-width': ['case', ['==', ['get', 'id'], S.selected || ''], 2.8, isImagery ? 1.8 : 1.3],
-          'line-opacity': isImagery ? 0.92 : 0.78,
+          'line-color': isImagery ? '#f8fafc' : '#cbd5e1',
+          'line-width': isImagery ? 1.6 : 1.2,
+          'line-opacity': isImagery ? 0.85 : 0.72,
+        },
+      });
+    }
+
+    // Real -25m Sentinel-2 shore exclusion buffer on selected lake
+    if (!map.getLayer('selected-buffer-fill')) {
+      map.addLayer({
+        id: 'selected-buffer-fill',
+        type: 'fill',
+        source: 'selected-buffer',
+        paint: {
+          'fill-color': '#22d3ee',
+          'fill-opacity': 0.14,
+        },
+      });
+    }
+
+    if (!map.getLayer('selected-buffer-line')) {
+      map.addLayer({
+        id: 'selected-buffer-line',
+        type: 'line',
+        source: 'selected-buffer',
+        paint: {
+          'line-color': '#e0f2fe',
+          'line-width': 1.6,
+          'line-dasharray': [3, 2],
+          'line-opacity': 0.92,
+        },
+      });
+    }
+
+    // Compared lake highlight (violet dashed halo + outline)
+    if (!map.getLayer('compared-lake-halo')) {
+      map.addLayer({
+        id: 'compared-lake-halo',
+        type: 'line',
+        source: 'compared-lake',
+        paint: {
+          'line-color': '#e879f9',
+          'line-width': 11,
+          'line-blur': 7,
+          'line-opacity': 0.65,
+        },
+      });
+    }
+
+    if (!map.getLayer('compared-lake-outline')) {
+      map.addLayer({
+        id: 'compared-lake-outline',
+        type: 'line',
+        source: 'compared-lake',
+        paint: {
+          'line-color': '#f0abfc',
+          'line-width': 2.8,
+          'line-dasharray': [4, 2],
+          'line-opacity': 0.95,
+        },
+      });
+    }
+
+    // Selected lake unmistakable luminous area highlight
+    if (!map.getLayer('selected-lake-halo')) {
+      map.addLayer({
+        id: 'selected-lake-halo',
+        type: 'line',
+        source: 'selected-lake',
+        paint: {
+          'line-color': ['coalesce', ['get', 'color'], '#22d3ee'],
+          'line-width': 15,
+          'line-blur': 10,
+          'line-opacity': 0.78,
+        },
+      });
+    }
+
+    if (!map.getLayer('selected-lake-outline')) {
+      map.addLayer({
+        id: 'selected-lake-outline',
+        type: 'line',
+        source: 'selected-lake',
+        paint: {
+          'line-color': '#ffffff',
+          'line-width': 3.4,
+          'line-opacity': 0.98,
         },
       });
     }
@@ -545,6 +930,7 @@
       const snap = getActiveSnapshot(lake.id);
       const ev = evalSnapshot(lake, snap);
       const isSelected = lake.id === S.selected;
+      const isCompared = lake.id === S.compareId;
       const center = getLakeCenter(lake);
 
       if (!S.markers[lake.id]) {
@@ -554,8 +940,11 @@
         titleSpan.textContent = shortLakeName(lake.name);
         const valSpan = document.createElement('span');
         valSpan.className = 'lake-marker-val';
+        const trendSpan = document.createElement('span');
+        trendSpan.className = 'lake-marker-trend';
         el.appendChild(titleSpan);
         el.appendChild(valSpan);
+        el.appendChild(trendSpan);
         el.addEventListener('click', (e) => {
           e.stopPropagation();
           selectLake(lake.id);
@@ -563,7 +952,7 @@
         const marker = new maplibregl.Marker({ element: el, anchor: 'bottom' })
           .setLngLat(center)
           .addTo(map);
-        S.markers[lake.id] = { marker, el, valSpan, titleSpan };
+        S.markers[lake.id] = { marker, el, valSpan, trendSpan, titleSpan };
       }
 
       const entry = S.markers[lake.id];
@@ -571,42 +960,111 @@
       entry.titleSpan.textContent = shortLakeName(lake.name);
       entry.valSpan.textContent = ev.shortVal;
       entry.valSpan.style.color = ev.color;
-      entry.el.style.borderColor = isSelected ? ev.color : 'rgba(148, 163, 184, 0.26)';
-      entry.el.style.boxShadow = isSelected ? `0 0 18px ${ev.color}66` : '0 4px 12px rgba(0, 0, 0, 0.45)';
-      entry.el.style.zIndex = isSelected ? '12' : '2';
+      if (ev.trend > 0) {
+        entry.trendSpan.textContent = '↗';
+        entry.trendSpan.className = 'lake-marker-trend up';
+      } else if (ev.trend < 0) {
+        entry.trendSpan.textContent = '↘';
+        entry.trendSpan.className = 'lake-marker-trend down';
+      } else {
+        entry.trendSpan.textContent = '';
+        entry.trendSpan.className = 'lake-marker-trend';
+      }
+
+      entry.el.classList.toggle('selected', isSelected);
+      entry.el.classList.toggle('compared', isCompared);
+      entry.el.style.borderColor = isSelected ? ev.color : (isCompared ? '#e879f9' : 'rgba(148, 163, 184, 0.28)');
+      entry.el.style.boxShadow = isSelected
+        ? `0 0 22px ${ev.color}88`
+        : (isCompared ? '0 0 16px rgba(232, 121, 249, 0.55)' : '0 4px 12px rgba(0, 0, 0, 0.45)');
+      entry.el.style.zIndex = isSelected ? '20' : (isCompared ? '14' : '2');
     }
   }
 
-  function syncMapData() {
+  function isMapStyleUsable() {
     const map = S.map;
-    if (!map || !S.mapStyleReady) return;
+    if (!map) return false;
+    if (S.mapStyleReady) return true;
+    if (typeof map.isStyleLoaded === 'function' && map.isStyleLoaded()) {
+      S.mapStyleReady = true;
+      return true;
+    }
+    return false;
+  }
+
+  function syncMapData() {
+    // HTML badges always update immediately regardless of WebGL style transition state!
+    syncMarkers();
+
+    const map = S.map;
+    if (!map || !isMapStyleUsable()) return;
 
     ensureCustomLayers();
     const lakesFC = buildLakesFeatureCollection();
     const anchorsFC = buildAnchorsFeatureCollection(lakesFC);
-    const cascadeFC = buildCascadeFeatureCollection();
+    const cascade = buildCascadeFeatureCollection();
+    const selFC = buildSingleLakeFC(S.selected);
+    const cmpFC = buildSingleLakeFC(S.compareId);
+    const bufFC = buildSelectedBufferFC();
 
-    const lakesSrc = map.getSource('lakes');
-    if (lakesSrc && lakesSrc.setData) lakesSrc.setData(lakesFC);
-    const anchorsSrc = map.getSource('lake-anchors');
-    if (anchorsSrc && anchorsSrc.setData) anchorsSrc.setData(anchorsFC);
-    const cascadeSrc = map.getSource('cascade-flows');
-    if (cascadeSrc && cascadeSrc.setData) cascadeSrc.setData(cascadeFC);
+    const setSrc = (id, data) => {
+      const src = map.getSource(id);
+      if (src && src.setData) src.setData(data);
+    };
+    setSrc('lakes', lakesFC);
+    setSrc('lake-anchors', anchorsFC);
+    setSrc('cascade-flows', cascade.lines);
+    setSrc('cascade-arrows', cascade.arrows);
+    setSrc('selected-lake', selFC);
+    setSrc('compared-lake', cmpFC);
+    setSrc('selected-buffer', bufFC);
 
     const isImagery = S.basemap === 'satellite' || S.basemap === 'hybrid';
-    if (map.getLayer('lakes-outline')) {
-      map.setPaintProperty('lakes-outline', 'line-width', [
-        'case', ['==', ['get', 'id'], S.selected || ''], 2.8, isImagery ? 1.8 : 1.3,
+    const hasSel = Boolean(S.selected);
+
+    // Highlight selected lake's full water area strongly and subtly dim non-selected lakes
+    if (map.getLayer('lakes-fill')) {
+      const selOp = isImagery ? 0.54 : 0.88;
+      const cmpOp = isImagery ? 0.46 : 0.78;
+      const otherOp = hasSel ? (isImagery ? 0.24 : 0.46) : (isImagery ? 0.40 : 0.76);
+      map.setPaintProperty('lakes-fill', 'fill-opacity', [
+        'case',
+        ['==', ['get', 'id'], S.selected || ''], selOp,
+        ['==', ['get', 'id'], S.compareId || ''], cmpOp,
+        otherOp,
       ]);
-      map.setPaintProperty('lakes-outline', 'line-color', [
-        'case', ['==', ['get', 'id'], S.selected || ''], '#ffffff', isImagery ? '#f8fafc' : '#cbd5e1',
+    }
+    if (map.getLayer('lakes-glow')) {
+      const baseGlow = isImagery ? 0.52 : 0.38;
+      map.setPaintProperty('lakes-glow', 'line-opacity', [
+        'case',
+        ['==', ['get', 'id'], S.selected || ''], 0.0, // handled by brighter selected-lake-halo
+        hasSel ? baseGlow * 0.55 : baseGlow,
       ]);
     }
     if (map.getLayer('cascade-lines')) {
-      map.setPaintProperty('cascade-lines', 'line-opacity', S.showCascades ? 0.78 : 0.0);
+      map.setPaintProperty('cascade-lines', 'line-opacity', S.showCascades ? 0.85 : 0.0);
     }
+    if (map.getLayer('cascade-active-glow')) {
+      map.setPaintProperty('cascade-active-glow', 'line-opacity', S.showCascades ? 0.55 : 0.0);
+    }
+    if (map.getLayer('cascade-arrow-heads')) {
+      map.setPaintProperty('cascade-arrow-heads', 'fill-opacity', S.showCascades ? 0.92 : 0.0);
+    }
+  }
 
-    syncMarkers();
+  function startCascadeAnimation() {
+    clearInterval(S.dashTimer);
+    S.dashTimer = setInterval(() => {
+      if (!S.showCascades || !S.map || !S.mapStyleReady) return;
+      if (!S.map.getLayer || !S.map.getLayer('cascade-lines')) return;
+      S.dashStep = (S.dashStep + 1) % DASH_SEQUENCE.length;
+      try {
+        S.map.setPaintProperty('cascade-lines', 'line-dasharray', DASH_SEQUENCE[S.dashStep]);
+      } catch (_) {
+        // Ignore if style is currently mid-swap
+      }
+    }, 150);
   }
 
   function hideTooltip() {
@@ -622,18 +1080,25 @@
     const ev = evalSnapshot(lake, snap);
     const parts = [];
     if (snap && snap.c != null) parts.push(`Chl-a ${Number(snap.c).toFixed(1)} мкг/л`);
-    if (snap && snap.f != null) parts.push(`+10д: ${Number(snap.f).toFixed(1)}`);
+    if (snap && snap.dc != null) parts.push(`${snap.dc > 0 ? '+' : ''}${snap.dc.toFixed(1)}`);
     if (snap && snap.t != null) parts.push(`TSI ${Number(snap.t).toFixed(0)}`);
+    if (snap && snap.cov != null) parts.push(`${Math.round(snap.cov)}% воды`);
 
     tip.innerHTML =
       `<div class="tooltip-title" style="color:${esc(ev.color)}">${esc(lake ? lake.name : props.name)}</div>` +
       `<div class="tooltip-sub">${esc(parts.join(' · ') || ev.statusLabel)}</div>` +
-      `<div class="tooltip-note">${esc(ev.statusLabel)} · Нажмите для анализа</div>`;
-    const left = Math.min(window.innerWidth - 225, (e.point ? e.point.x : 0) + 14);
-    const top = Math.max(12, (e.point ? e.point.y : 0) - 52);
+      `<div class="tooltip-note">${esc(ev.statusLabel)} · Площадь ${fmtNum(lake && lake.area_km2, 2, ' км²')}</div>`;
+    const left = Math.min(window.innerWidth - 230, (e.point ? e.point.x : 0) + 14);
+    const top = Math.max(12, (e.point ? e.point.y : 0) - 54);
     tip.style.left = `${left}px`;
     tip.style.top = `${top}px`;
     tip.hidden = false;
+  }
+
+  function onMapStyleReady() {
+    S.mapStyleReady = true;
+    harmonizeStyle();
+    syncMapData();
   }
 
   function initMap() {
@@ -654,16 +1119,16 @@
     }
     S.map = map;
 
-    map.on('style.load', () => {
-      S.mapStyleReady = true;
-      harmonizeStyle();
-      syncMapData();
-    });
+    map.on('style.load', onMapStyleReady);
+    map.on('load', onMapStyleReady);
 
+    // Fallback ONLY if the entire style JSON failed to load, never on transient tile errors
     map.on('error', (ev) => {
-      if (!S.mapStyleReady && ev && ev.error && S.basemap !== 'fallback') {
+      const msg = String((ev && ev.error && ev.error.message) || '');
+      const isStyleFailure = !S.mapStyleReady && (msg.includes('style') || msg.includes('Failed to fetch'));
+      if (isStyleFailure && S.basemap !== 'fallback') {
         S.basemap = 'fallback';
-        map.setStyle(FALLBACK_STYLE);
+        map.setStyle(FALLBACK_STYLE, { diff: false });
       }
     });
 
@@ -687,6 +1152,8 @@
       map.on('mouseleave', layerId, onLeave);
       map.on('click', layerId, onClick);
     }
+
+    startCascadeAnimation();
   }
 
   function setBasemap(name) {
@@ -698,7 +1165,45 @@
     });
     if (S.map) {
       S.mapStyleReady = false;
-      S.map.setStyle(BASEMAPS[name]);
+      // { diff: false } guarantees MapLibre GL JS v4 always emits style.load reliably!
+      S.map.setStyle(BASEMAPS[name], { diff: false });
+    }
+  }
+
+  function setTheme(theme) {
+    if (!['chl', 'tsi', 'coverage'].includes(theme) || theme === S.theme) return;
+    S.theme = theme;
+    $$('#themeSwitch .theme-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.theme === theme);
+    });
+    renderLegend();
+    renderLakePicker();
+    syncMapData();
+    if (S.selected) renderDrawerHeader();
+  }
+
+  function setSeason(season) {
+    if (!['all', 'open', 'summer'].includes(season)) return;
+    S.season = season;
+    $$('#seasonSwitch .season-btn').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.season === season);
+    });
+    const dates = getTimelineDates();
+    if (dates.length && !dates.includes(S.date)) {
+      const target = dates.find((d) => d >= (S.date || '')) || dates[dates.length - 1];
+      setDate(target, true);
+    } else {
+      renderTimelineControls();
+    }
+  }
+
+  function cycleSpeed() {
+    S.speedIdx = (S.speedIdx + 1) % SPEEDS.length;
+    const btn = $('#speedBtn');
+    if (btn) btn.textContent = SPEEDS[S.speedIdx].label;
+    if (S.playing) {
+      clearInterval(S.playTimer);
+      S.playTimer = setInterval(playTick, SPEEDS[S.speedIdx].ms);
     }
   }
 
@@ -720,22 +1225,43 @@
   // UI Rendering: Legend, Lake Picker, Timeline
   // =========================================================================
   function renderLegend() {
-    const counts = { green: 0, yellow: 0, red: 0, ice: 0, nodata: 0 };
+    const counts = {};
     for (const lake of S.lakes) {
       const ev = evalSnapshot(lake, getActiveSnapshot(lake.id));
       counts[ev.category] = (counts[ev.category] || 0) + 1;
     }
+
     const titleEl = $('#legendTitle');
-    if (titleEl) {
-      titleEl.textContent = S.timeline && S.timeline.has_forecast ? 'Прогноз риска (+10д)' : 'Факт Chl-a (СанПиН)';
+    let rows = [];
+    if (S.theme === 'tsi') {
+      if (titleEl) titleEl.textContent = 'Трофность (TSI Карлсона)';
+      rows = [
+        { color: '#22d3ee', label: 'Олиготрофное (< 40)', count: counts.oligo || 0 },
+        { color: '#34d399', label: 'Мезотрофное (40–50)', count: counts.meso || 0 },
+        { color: '#fbbf24', label: 'Умер. эвтрофное (50–60)', count: counts.meso_eu || 0 },
+        { color: '#fb7185', label: 'Эвтрофное (≥ 60)', count: counts.eutro || 0 },
+        { color: '#93c5fd', label: 'Лёд / Облака', count: (counts.ice || 0) + (counts.nodata || 0) },
+      ];
+    } else if (S.theme === 'coverage') {
+      if (titleEl) titleEl.textContent = 'Покрытие Sentinel-2 (%)';
+      rows = [
+        { color: '#34d399', label: 'Отличное (≥ 75%)', count: counts.high || 0 },
+        { color: '#22d3ee', label: 'Хорошее (50–75%)', count: counts.mid || 0 },
+        { color: '#fbbf24', label: 'Частичное (30–50%)', count: counts.low || 0 },
+        { color: '#c084fc', label: 'Интерполяция (1 шаг)', count: counts.interp || 0 },
+        { color: '#64748b', label: 'Лёд / Облака', count: (counts.ice || 0) + (counts.nodata || 0) },
+      ];
+    } else {
+      if (titleEl) titleEl.textContent = S.timeline && S.timeline.has_forecast ? 'Прогноз риска (+10д)' : 'Хлорофилл-а (СанПиН)';
+      rows = [
+        { color: '#34d399', label: 'Норма (< 15 мкг/л)', count: counts.green || 0 },
+        { color: '#fbbf24', label: 'Внимание (15–25)', count: counts.yellow || 0 },
+        { color: '#fb7185', label: 'Опасность (≥ 25)', count: counts.red || 0 },
+        { color: '#93c5fd', label: 'Ледяной покров', count: counts.ice || 0 },
+        { color: '#64748b', label: 'Облака / нет данных', count: counts.nodata || 0 },
+      ];
     }
-    const rows = [
-      { color: '#34d399', label: 'Норма (< 15 мкг/л)', count: counts.green },
-      { color: '#fbbf24', label: 'Внимание (15–25)', count: counts.yellow },
-      { color: '#fb7185', label: 'Опасность (≥ 25)', count: counts.red },
-      { color: '#7dd3fc', label: 'Ледяной покров', count: counts.ice },
-      { color: '#64748b', label: 'Облака / нет данных', count: counts.nodata },
-    ];
+
     const el = $('#legendItems');
     if (el) {
       el.innerHTML = rows.map((r) => (
@@ -772,15 +1298,19 @@
       .sort((a, b) => b.ev.sortScore - a.ev.sortScore);
 
     listEl.innerHTML = sorted.length
-      ? sorted.map(({ lake, ev }) => (
-          `<button type="button" class="lake-dropdown-item${lake.id === S.selected ? ' selected' : ''}" data-id="${esc(lake.id)}">` +
-          `<span class="lake-dropdown-name">` +
-          `<span class="dot-sm" style="background:${ev.color}"></span>` +
-          `<span>${esc(shortLakeName(lake.name))}${lake.protected_area ? ' <span class="lake-dropdown-sub">ООПТ</span>' : ''}</span>` +
-          `</span>` +
-          `<span class="lake-dropdown-meta" style="color:${ev.color}">${esc(ev.shortVal)}${Number.isFinite(Number(ev.shortVal.replace('~', ''))) ? ' мкг/л' : ''}</span>` +
-          `</button>`
-        )).join('')
+      ? sorted.map(({ lake, ev }) => {
+          const unit = S.theme === 'chl' && Number.isFinite(Number(ev.shortVal.replace('~', ''))) ? ' мкг/л' : '';
+          const arrow = ev.trend > 0 ? ' ↗' : (ev.trend < 0 ? ' ↘' : '');
+          return (
+            `<button type="button" class="lake-dropdown-item${lake.id === S.selected ? ' selected' : ''}" data-id="${esc(lake.id)}">` +
+            `<span class="lake-dropdown-name">` +
+            `<span class="dot-sm" style="background:${ev.color}"></span>` +
+            `<span>${esc(shortLakeName(lake.name))}${lake.protected_area ? ' <span class="lake-dropdown-sub">ООПТ</span>' : ''}</span>` +
+            `</span>` +
+            `<span class="lake-dropdown-meta" style="color:${ev.color}">${esc(ev.shortVal)}${unit}${arrow}</span>` +
+            `</button>`
+          );
+        }).join('')
       : '<div class="muted-text" style="padding:8px 10px">Совпадений не найдено</div>';
   }
 
@@ -799,7 +1329,6 @@
     const dateLabel = $('#activeDateLabel');
     if (dateLabel) dateLabel.textContent = fmtDateRu(S.date);
 
-    // Quick year buttons
     const activeYear = S.date ? Number(S.date.slice(0, 4)) : null;
     const years = (S.timeline && S.timeline.years) || [];
     const track = $('#yearTrack');
@@ -809,7 +1338,6 @@
       )).join('');
     }
 
-    // Status summary caption
     const sumEl = $('#timelineSummary');
     if (sumEl) {
       let valid = 0; let interp = 0; let ice = 0; let cloud = 0;
@@ -830,11 +1358,8 @@
       sumEl.textContent = `${modeTag} · ${parts.join(' · ') || 'нет данных'}`;
     }
 
-    const openBtn = $('#openWaterToggle');
-    if (openBtn) {
-      openBtn.classList.toggle('active', S.openWaterOnly);
-      openBtn.hidden = S.mode === 'lab';
-    }
+    const seasonSw = $('#seasonSwitch');
+    if (seasonSw) seasonSw.hidden = S.mode === 'lab';
   }
 
   function updateAllViewsForDate(fetchDetail = true) {
@@ -852,7 +1377,7 @@
         clearTimeout(S.debounceTimer);
         S.debounceTimer = setTimeout(() => {
           loadSelectedLakeDetail(S.selected, false);
-        }, S.playing ? 450 : 140);
+        }, S.playing ? 450 : 120);
       }
     }
   }
@@ -863,7 +1388,6 @@
     if (!all.length) return;
     let target = isoDate;
     if (!S.timeline.snapshots[target]) {
-      // Snap to closest available date in timeline
       const tMs = Date.parse(isoDate);
       if (!Number.isNaN(tMs)) {
         target = all.reduce((best, cand) => (
@@ -893,9 +1417,16 @@
     const dates = getTimelineDates();
     const inYear = dates.filter((d) => Number(d.slice(0, 4)) === Number(year));
     if (!inYear.length) return;
-    // Prefer peak summer (late July / August) for visual insight
     const preferred = inYear.find((d) => d.slice(5) >= '07-21') || inYear[Math.floor(inYear.length / 2)];
     setDate(preferred, true);
+  }
+
+  function playTick() {
+    const dates = getTimelineDates();
+    if (!dates.length) return;
+    const idx = dates.indexOf(S.date);
+    const nextIdx = (idx < 0 || idx >= dates.length - 1) ? 0 : idx + 1;
+    setDate(dates[nextIdx], false);
   }
 
   function togglePlay() {
@@ -910,13 +1441,7 @@
     }
     clearInterval(S.playTimer);
     if (S.playing) {
-      S.playTimer = setInterval(() => {
-        const dates = getTimelineDates();
-        if (!dates.length) return;
-        const idx = dates.indexOf(S.date);
-        const nextIdx = (idx < 0 || idx >= dates.length - 1) ? 0 : idx + 1;
-        setDate(dates[nextIdx], false);
-      }, 420);
+      S.playTimer = setInterval(playTick, SPEEDS[S.speedIdx].ms);
     } else if (S.selected) {
       loadSelectedLakeDetail(S.selected, false);
     }
@@ -927,15 +1452,23 @@
   }
 
   // =========================================================================
-  // Lake Inspector Drawer (Header, Overview Tab, History + Passport Tab)
+  // Lake Inspector Drawer (Header, Overview Tab, History + Compare + CSV)
   // =========================================================================
+  function getFreshPredict(lakeId) {
+    const p = S.activePredict;
+    if (!p || p.water_body_id !== lakeId) return null;
+    if (p._error) return !S.playing && p._date === S.date ? p : null;
+    if (p.date_used === S.date || (!S.playing && p.requested_date === S.date)) return p;
+    return null;
+  }
+
   function renderDrawerHeader() {
     const hdr = $('#panelHeader');
     const lake = S.selected ? S.lakesById[S.selected] : null;
     if (!hdr || !lake) return;
 
     const snap = getActiveSnapshot(lake.id);
-    const pred = S.activePredict && S.activePredict.water_body_id === lake.id ? S.activePredict : null;
+    const pred = getFreshPredict(lake.id);
     const ev = evalSnapshot(lake, snap);
 
     const chlMain = pred && pred.chl_a_forecast != null
@@ -961,8 +1494,17 @@
     const kpi2Lbl = pred && pred.bloom_probability != null ? 'Риск цветения' : 'Темп. 14 д';
 
     const calmVal = pred ? pred.calm_fraction_7d : (snap ? snap.clm : null);
-    const kpi3Val = calmVal != null ? `${Math.round(calmVal * 100)}%` : fmtNum(lake.mean_depth_m, 1, ' м');
-    const kpi3Lbl = calmVal != null ? 'Штиль 7 д' : 'Ср. глубина';
+    const kpi3Val = calmVal != null
+      ? `${Math.round(calmVal * 100)}%`
+      : (snap && snap.cov != null ? `${Math.round(snap.cov)}%` : fmtNum(lake.mean_depth_m, 1, ' м'));
+    const kpi3Lbl = calmVal != null ? 'Штиль 7 д' : (snap && snap.cov != null ? 'Вода S2' : 'Ср. глубина');
+
+    let deltaHtml = '';
+    if (snap && snap.dc != null && snap.c != null) {
+      const cls = snap.dc >= 0.5 ? 'up' : (snap.dc <= -0.5 ? 'down' : 'flat');
+      const arrow = snap.dc >= 0.5 ? '↗' : (snap.dc <= -0.5 ? '↘' : '→');
+      deltaHtml = `<span class="delta-pill ${cls}" title="Изменение к предыдущему наблюдению">${snap.dc > 0 ? '+' : ''}${snap.dc.toFixed(1)} ${arrow}</span>`;
+    }
 
     const ooptHtml = lake.protected_area
       ? `<div class="oopt-pill"><span>ООПТ · ${esc(lake.protected_area)}${lake.chemical_treatment_allowed === false ? ' · Хим. обработка запрещена' : ''}</span></div>`
@@ -972,7 +1514,7 @@
       `<div class="drawer-title-row">` +
       `<div>` +
       `<h2 class="drawer-title">${esc(lake.name)}</h2>` +
-      `<div class="drawer-subtitle">${esc(lake.basin || (lake.group === 'myadel' ? 'Мядельская группа озёр' : 'Нарочанская группа озёр'))}</div>` +
+      `<div class="drawer-subtitle">${esc(lake.basin || (lake.group === 'myadel' ? 'Мядельская группа озёр' : 'Нарочанская группа озёр'))} · ${fmtNum(lake.area_km2, 2, ' км²')}</div>` +
       `</div>` +
       `<button type="button" class="icon-btn" id="drawerClose" aria-label="Закрыть панель">×</button>` +
       `</div>` +
@@ -982,6 +1524,7 @@
       `<div class="tsi-number-row">` +
       `<span class="tsi-number" style="color:${ev.color}">${chlMain != null ? Number(chlMain).toFixed(1) : ev.shortVal}</span>` +
       `${chlMain != null ? '<span class="tsi-unit">мкг/л</span>' : ''}` +
+      deltaHtml +
       `</div>` +
       `<span class="tsi-label">${esc(mainLabel)} · ${esc(fmtDateRu(pred ? pred.date_used : S.date))}</span>` +
       `</div>` +
@@ -1014,7 +1557,7 @@
   }
 
   function renderOverviewTab(body, lake) {
-    const p = S.activePredict && S.activePredict.water_body_id === lake.id ? S.activePredict : null;
+    const p = getFreshPredict(lake.id);
     if (!p) {
       body.innerHTML = '<div class="lake-note">Загрузка детального среза наблюдений и прогноза…</div>';
       return;
@@ -1025,7 +1568,6 @@
       return;
     }
 
-    // 1. Forecast & Uncertainty card
     let forecastHtml = '';
     if (p.chl_a_forecast != null) {
       const interval = (p.pred_low_ug_l != null && p.pred_high_ug_l != null)
@@ -1053,7 +1595,6 @@
         `</div>`;
     }
 
-    // 2. Knowledge Graph reasons & recommendations
     const reasonsHtml = (p.reasons && p.reasons.length && p.chl_a_forecast != null)
       ? `<div class="section-block"><div class="section-label">Интерпретация и причины</div>` +
         `<ul class="clean-list">${p.reasons.map((r) => `<li>${esc(r)}</li>`).join('')}</ul></div>`
@@ -1064,7 +1605,6 @@
         `<ul class="clean-list">${p.recommendations.map((r) => `<li>${esc(r)}</li>`).join('')}</ul></div>`
       : '';
 
-    // 3. Cascade hydrology chips (clickable jump between cascade lakes!)
     const inflows = (lake.cascade_inflow_from || []).filter(Boolean);
     const outflow = lake.cascade_outflow_to;
     let cascadeHtml = '';
@@ -1087,7 +1627,6 @@
         `<div class="cascade-chips">${chips.join('')}</div></div>`;
     }
 
-    // 4. Meteo & Optical telemetry grid
     const factors = [
       { k: 'Темп. воздуха (14 д)', v: fmtNum(p.temp_mean_14d, 1, ' °C') },
       { k: 'Доля штиля (7 д)', v: p.calm_fraction_7d != null ? `${Math.round(p.calm_fraction_7d * 100)}%` : '—' },
@@ -1105,7 +1644,6 @@
         `<div class="factor-card"><div class="factor-name">${esc(f.k)}</div><div class="factor-val">${esc(f.v)}</div></div>`
       )).join('')}</div></div>`;
 
-    // 5. Provenance & Observation quality
     const obs = p.observation || {};
     const statusText = STATUS_RU[p.obs_status] || p.obs_status || (p.mode === 'lab' ? 'Лабораторная проба' : 'н/д');
     const metaCards = [
@@ -1130,8 +1668,56 @@
     });
   }
 
+  function exportSelectedCsv() {
+    const lake = S.selected ? S.lakesById[S.selected] : null;
+    const hist = S.activeHistory;
+    if (!lake || !hist || !Array.isArray(hist.points)) return;
+
+    const cmpLake = S.compareId ? S.lakesById[S.compareId] : null;
+    const cmpMap = new Map();
+    if (cmpLake && S.compareHistory && Array.isArray(S.compareHistory.points)) {
+      for (const pt of S.compareHistory.points) cmpMap.set(pt.date, pt.observed);
+    }
+
+    const header = [
+      'water_body_id', 'water_body_name', 'mode', 'date', 'obs_status',
+      'is_interpolated', 'chl_a_observed_ug_l', 'chl_a_forecast_10d_ug_l',
+      'forecast_low_ug_l', 'forecast_high_ug_l',
+    ];
+    if (cmpLake) header.push(`compare_${cmpLake.id}_chl_a_ug_l`);
+
+    const qCell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const lines = [header.join(',')];
+    for (const pt of hist.points) {
+      const row = [
+        qCell(lake.id), qCell(lake.name), qCell(S.mode), qCell(pt.date),
+        qCell(pt.obs_status || ''), pt.is_interpolated ? 'true' : 'false',
+        pt.observed == null ? '' : pt.observed,
+        pt.forecast == null ? '' : pt.forecast,
+        pt.forecast_low == null ? '' : pt.forecast_low,
+        pt.forecast_high == null ? '' : pt.forecast_high,
+      ];
+      if (cmpLake) {
+        const cv = cmpMap.get(pt.date);
+        row.push(cv == null ? '' : cv);
+      }
+      lines.push(row.join(','));
+    }
+
+    const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${lake.id}_${S.mode}_${S.date || 'series'}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   function renderHistoryTab(body, lake) {
     const h = S.activeHistory && S.activeHistory.water_body_id === lake.id ? S.activeHistory : null;
+    const otherLakes = S.lakes.filter((l) => l.id !== lake.id);
     const passport = [
       { k: 'Площадь зеркала', v: fmtNum(lake.area_km2, 2, ' км²') },
       { k: 'Средняя глубина', v: fmtNum(lake.mean_depth_m, 1, ' м') },
@@ -1147,15 +1733,22 @@
       `<div class="section-block">` +
       `<div class="section-row">` +
       `<span class="section-label">Временной ряд Chl-a (мкг/л)</span>` +
+      `<button type="button" id="exportCsvBtn" class="export-btn" title="Скачать таблицу временного ряда в CSV">↓ CSV</button>` +
+      `</div>` +
+      `<div class="chart-controls">` +
       `<select id="histWin" class="win-select" aria-label="Период графика">` +
       `<option value="36"${S.histWin === 36 ? ' selected' : ''}>1 год (36 дек.)</option>` +
       `<option value="108"${S.histWin === 108 ? ' selected' : ''}>3 года (108 дек.)</option>` +
       `<option value="360"${S.histWin === 360 ? ' selected' : ''}>Весь ряд (2018–2026)</option>` +
       `</select>` +
+      `<select id="compareSelect" class="win-select" aria-label="Сравнить с другим озером">` +
+      `<option value="">Сравнить с озером…</option>` +
+      otherLakes.map((l) => `<option value="${esc(l.id)}"${S.compareId === l.id ? ' selected' : ''}>vs ${esc(shortLakeName(l.name))}</option>`).join('') +
+      `</select>` +
       `</div>` +
       `<div class="chart-card">` +
       `<div class="chart-canvas-wrap"><canvas id="chart"></canvas></div>` +
-      `<div class="chart-hint">${h ? 'Нажмите на любую точку графика для перехода к дате на карте. Разрывы — лёд и облачность.' : 'Загрузка истории наблюдений…'}</div>` +
+      `<div class="chart-hint">${h ? 'Клик по графику переводит карту на выбранную дату. Разрывы — лёд и облачность.' : 'Загрузка истории наблюдений…'}</div>` +
       `</div>` +
       `</div>` +
       `<div class="section-block">` +
@@ -1171,8 +1764,19 @@
       winSel.addEventListener('change', () => {
         S.histWin = Number(winSel.value) || 108;
         loadSelectedLakeHistory(lake.id);
+        if (S.compareId) loadCompareLakeHistory(S.compareId);
       });
     }
+
+    const cmpSel = $('#compareSelect', body);
+    if (cmpSel) {
+      cmpSel.addEventListener('change', () => {
+        setCompareLake(cmpSel.value || null);
+      });
+    }
+
+    const expBtn = $('#exportCsvBtn', body);
+    if (expBtn) expBtn.addEventListener('click', exportSelectedCsv);
 
     if (h) drawHistoryChart(lake, h);
   }
@@ -1212,6 +1816,23 @@
       },
     ];
 
+    // Overlay second lake for direct comparison!
+    if (S.compareId && S.compareHistory && S.compareHistory.water_body_id === S.compareId && labels.length) {
+      const cmpLake = S.lakesById[S.compareId];
+      const cmpByDate = new Map((S.compareHistory.points || []).map((pt) => [pt.date, pt.observed]));
+      const cmpSeries = labels.map((d) => (cmpByDate.has(d) ? cmpByDate.get(d) : null));
+      datasets.push({
+        label: `Сравнение: ${shortLakeName(cmpLake ? cmpLake.name : S.compareId)}`,
+        data: cmpSeries,
+        borderColor: '#e879f9',
+        borderDash: [4, 3],
+        borderWidth: 2,
+        pointRadius: pts.length > 140 ? 1.2 : 2.2,
+        spanGaps: false,
+        tension: 0.25,
+      });
+    }
+
     if (fcData.some((v) => v != null)) {
       if (fcLow.some((v) => v != null) && fcHigh.some((v) => v != null)) {
         datasets.push({
@@ -1244,7 +1865,6 @@
       });
     }
 
-    // Overlay real BSU lab probes on satellite chart when present!
     const labPts = S.mode === 'satellite' && S.timeline && S.timeline.lab_points ? (S.timeline.lab_points[lake.id] || []) : [];
     if (labPts.length && labels.length) {
       const labSeries = new Array(labels.length).fill(null);
@@ -1266,8 +1886,8 @@
         datasets.push({
           label: 'Пробы БГУ (лаб.)',
           data: labSeries,
-          borderColor: '#c084fc',
-          backgroundColor: '#f5d0fe',
+          borderColor: '#34d399',
+          backgroundColor: '#a7f3d0',
           pointStyle: 'rectRot',
           pointRadius: 5,
           pointHoverRadius: 7,
@@ -1366,19 +1986,20 @@
   }
 
   // =========================================================================
-  // Data Loading & Lake Selection
+  // Data Loading, Lake Selection & Comparison
   // =========================================================================
   async function loadSelectedLakeDetail(lakeId, alsoHistory = true) {
     if (!lakeId || !S.date) return;
     const seq = ++S.predictSeq;
-    const cacheKey = `${lakeId}|${S.date}|${S.mode}`;
+    const reqDate = S.date;
+    const cacheKey = `${lakeId}|${reqDate}|${S.mode}`;
     let data = S.predictCache.get(cacheKey);
     if (!data) {
       try {
-        data = await apiGet(`/predict/${encodeURIComponent(lakeId)}?date=${encodeURIComponent(S.date)}&mode=${encodeURIComponent(S.mode)}`);
+        data = await apiGet(`/predict/${encodeURIComponent(lakeId)}?date=${encodeURIComponent(reqDate)}&mode=${encodeURIComponent(S.mode)}`);
         S.predictCache.set(cacheKey, data);
       } catch (err) {
-        data = { water_body_id: lakeId, _error: `Нет детальных данных на ${S.date}: ${err.message}` };
+        data = { water_body_id: lakeId, _date: reqDate, _error: `Нет детальных данных на ${reqDate}: ${err.message}` };
       }
     }
     if (seq !== S.predictSeq || S.selected !== lakeId) return;
@@ -1389,12 +2010,11 @@
       Array.isArray(S.activeHistory.points) && S.activeHistory.points.some((pt) => pt.date === S.date);
     if (alsoHistory || (S.activeTab === 'history' && !chartHasDate)) {
       loadSelectedLakeHistory(lakeId);
+      if (S.compareId) loadCompareLakeHistory(S.compareId);
     }
   }
 
-  async function loadSelectedLakeHistory(lakeId) {
-    if (!lakeId) return;
-    const seq = ++S.historySeq;
+  async function fetchLakeHistoryCached(lakeId) {
     const lastTimelineDate = (S.timeline && S.timeline.dates && S.timeline.dates[S.timeline.dates.length - 1]) || S.date || '2026-11-15';
     const endIso = S.histWin >= 360 ? lastTimelineDate : (S.date || lastTimelineDate);
     const cacheKey = `${lakeId}|${S.mode}|${S.histWin}|${endIso}`;
@@ -1407,15 +2027,45 @@
         hist = { water_body_id: lakeId, points: [] };
       }
     }
+    return hist;
+  }
+
+  async function loadSelectedLakeHistory(lakeId) {
+    if (!lakeId) return;
+    const seq = ++S.historySeq;
+    const hist = await fetchLakeHistoryCached(lakeId);
     if (seq !== S.historySeq || S.selected !== lakeId) return;
     S.activeHistory = hist;
     if (S.activeTab === 'history') renderDrawerBody();
+  }
+
+  async function loadCompareLakeHistory(compareId) {
+    if (!compareId) {
+      S.compareHistory = null;
+      if (S.activeTab === 'history' && S.selected) renderDrawerBody();
+      return;
+    }
+    const hist = await fetchLakeHistoryCached(compareId);
+    if (S.compareId !== compareId) return;
+    S.compareHistory = hist;
+    if (S.activeTab === 'history' && S.selected) renderDrawerBody();
+  }
+
+  async function setCompareLake(lakeId) {
+    S.compareId = lakeId && lakeId !== S.selected && S.lakesById[lakeId] ? lakeId : null;
+    S.compareHistory = null;
+    syncMapData();
+    await loadCompareLakeHistory(S.compareId);
   }
 
   async function selectLake(lakeId, shouldFly = true) {
     const lake = S.lakesById[lakeId];
     if (!lake) return;
     S.selected = lakeId;
+    if (S.compareId === lakeId) {
+      S.compareId = null;
+      S.compareHistory = null;
+    }
     S.pickerOpen = false;
     const dd = $('#lakeDropdown');
     if (dd) dd.hidden = true;
@@ -1433,8 +2083,10 @@
 
   function closeDrawer() {
     S.selected = null;
+    S.compareId = null;
     S.activePredict = null;
     S.activeHistory = null;
+    S.compareHistory = null;
     destroyChart();
     const panel = $('#panel');
     if (panel) panel.hidden = true;
@@ -1462,6 +2114,7 @@
     S.mode = mode;
     S.predictCache.clear();
     S.historyCache.clear();
+    S.compareHistory = null;
     $$('#modeSwitch .seg').forEach((btn) => {
       const on = btn.dataset.mode === mode;
       btn.classList.toggle('active', on);
@@ -1480,7 +2133,10 @@
         ? prevDate
         : S.timeline.default_date;
       updateAllViewsForDate(true);
-      if (S.selected) loadSelectedLakeHistory(S.selected);
+      if (S.selected) {
+        loadSelectedLakeHistory(S.selected);
+        if (S.compareId) loadCompareLakeHistory(S.compareId);
+      }
     } catch (err) {
       showApiError(`Режим «${mode === 'lab' ? 'Лаборатория' : 'Спутник'}» недоступен: ${err.message}`);
     }
@@ -1552,7 +2208,6 @@
         }).join('') +
         `</div></div>`;
 
-      // Regression & Classification tables if present
       let modelTablesHtml = '';
       if (m.regression && typeof m.regression === 'object') {
         const rows = [];
@@ -1572,7 +2227,6 @@
         }
       }
 
-      // Part 1 data quality report
       let dqHtml = '';
       const dq = m.data_quality;
       if (dq && typeof dq === 'object') {
@@ -1702,17 +2356,22 @@
   }
 
   function bindEvents() {
-    // Basemap switcher
     $$('#basemapSwitch .mode-btn').forEach((btn) => {
       btn.addEventListener('click', () => setBasemap(btn.dataset.basemap));
     });
 
-    // Data mode switcher (satellite / lab)
     $$('#modeSwitch .seg').forEach((btn) => {
       btn.addEventListener('click', () => setMode(btn.dataset.mode));
     });
 
-    // Top bar actions
+    $$('#themeSwitch .theme-btn').forEach((btn) => {
+      btn.addEventListener('click', () => setTheme(btn.dataset.theme));
+    });
+
+    $$('#seasonSwitch .season-btn').forEach((btn) => {
+      btn.addEventListener('click', () => setSeason(btn.dataset.season));
+    });
+
     const resetBtn = $('#resetCamBtn');
     if (resetBtn) resetBtn.addEventListener('click', resetCamera);
 
@@ -1746,7 +2405,6 @@
     const helpClose = $('#helpClose');
     if (helpClose) helpClose.addEventListener('click', () => { const m = $('#helpModal'); if (m) m.hidden = true; });
 
-    // Modal backdrop clicks
     for (const id of ['#metricsModal', '#labModal', '#helpModal']) {
       const m = $(id);
       if (m) {
@@ -1756,7 +2414,6 @@
       }
     }
 
-    // Lake picker dropdown
     const pickerBtn = $('#lakePickerBtn');
     const dropdown = $('#lakeDropdown');
     if (pickerBtn && dropdown) {
@@ -1799,12 +2456,10 @@
       });
     }
 
-    // Drawer tabs
     $$('.drawer-tab').forEach((btn) => {
       btn.addEventListener('click', () => setDrawerTab(btn.dataset.tab));
     });
 
-    // Cascade flow toggle
     const cascadeToggle = $('#cascadeToggle');
     if (cascadeToggle) {
       cascadeToggle.addEventListener('change', () => {
@@ -1813,28 +2468,25 @@
       });
     }
 
-    // Timeline controls
+    const bufferToggle = $('#bufferToggle');
+    if (bufferToggle) {
+      bufferToggle.addEventListener('change', () => {
+        S.showBuffer = Boolean(bufferToggle.checked);
+        syncMapData();
+      });
+    }
+
     const playBtn = $('#playBtn');
     if (playBtn) playBtn.addEventListener('click', togglePlay);
+
+    const speedBtn = $('#speedBtn');
+    if (speedBtn) speedBtn.addEventListener('click', cycleSpeed);
 
     const prevBtn = $('#prev');
     if (prevBtn) prevBtn.addEventListener('click', () => { stopPlay(); stepDate(-1); });
 
     const nextBtn = $('#next');
     if (nextBtn) nextBtn.addEventListener('click', () => { stopPlay(); stepDate(1); });
-
-    const openWaterBtn = $('#openWaterToggle');
-    if (openWaterBtn) {
-      openWaterBtn.addEventListener('click', () => {
-        S.openWaterOnly = !S.openWaterOnly;
-        const dates = getTimelineDates();
-        if (dates.length && !dates.includes(S.date)) {
-          setDate(dates[dates.length - 1], true);
-        } else {
-          renderTimelineControls();
-        }
-      });
-    }
 
     const yearTrack = $('#yearTrack');
     if (yearTrack) {
@@ -1867,7 +2519,6 @@
       });
     }
 
-    // Keyboard shortcuts
     window.addEventListener('keydown', (e) => {
       const tag = e.target && e.target.tagName ? e.target.tagName.toLowerCase() : '';
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
@@ -1896,18 +2547,22 @@
     });
   }
 
-  // Export hooks for automated Node tests and browser debugging
   window.__dash = {
     state: S,
     selectLake,
     closeDrawer,
     setMode,
     setBasemap,
+    setTheme,
+    setSeason,
+    setCompareLake,
+    cycleSpeed,
     setDate,
     stepDate,
     togglePlay,
     openMetricsModal,
     openLabModal,
+    exportSelectedCsv,
     loadAll,
   };
 

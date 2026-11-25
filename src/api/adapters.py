@@ -187,12 +187,56 @@ def load_geometry(path: Path) -> Dict[str, dict]:
     return geoms
 
 
-def hydrate_registry_geometry(registry: Dict[str, dict], geo_path: Path) -> None:
-    """Прикрепить полигоны и дозаполнить center_lat/center_lon/bbox из GeoJSON, если их нет в YAML."""
+def _round_coords(obj, ndigits: int = 5):
+    if isinstance(obj, (list, tuple)):
+        if obj and isinstance(obj[0], (int, float)):
+            return [round(float(x), ndigits) for x in obj]
+        return [_round_coords(x, ndigits) for x in obj]
+    return obj
+
+
+def _compute_shore_buffer(geom: dict, buffer_m: float = 25.0) -> Optional[dict]:
+    """Вычисляет реальный внутренний буфер −25 м (UTM 35N) — рабочую зону расчёта Sentinel-2 без берега и островов."""
+    if not geom or buffer_m <= 0:
+        return None
+    try:
+        import numpy as np
+        import shapely
+        from pyproj import Transformer
+        from shapely.geometry import mapping, shape
+    except ImportError:
+        return None
+    try:
+        to_utm = Transformer.from_crs("EPSG:4326", "EPSG:32635", always_xy=True)
+        to_wgs = Transformer.from_crs("EPSG:32635", "EPSG:4326", always_xy=True)
+
+        def _proj(coords, tr):
+            arr = np.asarray(coords, dtype=float)
+            xs, ys = tr.transform(arr[:, 0], arr[:, 1])
+            return np.column_stack((xs, ys))
+
+        g = shape(geom)
+        if g.is_empty:
+            return None
+        g_utm = shapely.transform(g, lambda c: _proj(c, to_utm))
+        buf_utm = g_utm.buffer(-float(buffer_m))
+        if buf_utm.is_empty:
+            return None
+        buf_utm = buf_utm.simplify(5.0, preserve_topology=True)
+        buf_wgs = shapely.transform(buf_utm, lambda c: _proj(c, to_wgs))
+        res = mapping(buf_wgs)
+        return {"type": res["type"], "coordinates": _round_coords(res["coordinates"], 5)}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def hydrate_registry_geometry(registry: Dict[str, dict], geo_path: Path, shore_buffer_m: float = 25.0) -> None:
+    """Прикрепить полигоны, 25м внутренний буфер и дозаполнить center_lat/center_lon/bbox из GeoJSON."""
     geoms, props_by_id = load_geometry_details(geo_path)
     for wb_id, wb in registry.items():
         geom = geoms.get(wb_id)
         wb["geometry"] = geom
+        wb["buffer_geometry"] = _compute_shore_buffer(geom, shore_buffer_m) if geom else None
         props = props_by_id.get(wb_id) or {}
         if wb.get("bbox") is None and props.get("bbox") is not None:
             wb["bbox"] = _norm_bbox(props.get("bbox"))
