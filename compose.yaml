@@ -1,4 +1,5 @@
 services:
+  # Часть 3 (volkovich): лёгкий Rust SPARQL 1.1 сервер для графа знаний
   oxigraph:
     image: ghcr.io/oxigraph/oxigraph:latest
     command: ["serve", "--location", "/data", "--bind", "0.0.0.0:7878", "--cors"]
@@ -7,5 +8,55 @@ services:
     volumes:
       - graph_data:/data
 
+  # Часть 1 + Часть 4: геопространственная БД PostgreSQL + PostGIS (лёгкий Alpine-образ)
+  postgis:
+    image: postgis/postgis:16-3.4-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-eutro}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eutro}
+      POSTGRES_DB: ${POSTGRES_DB:-eutrophication}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgis_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eutro} -d ${POSTGRES_DB:-eutrophication}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # Часть 1 (запуск по требованию: docker compose --profile etl run --rm etl ...)
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["etl"]
+    depends_on:
+      postgis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-eutro}:${POSTGRES_PASSWORD:-eutro}@postgis:5432/${POSTGRES_DB:-eutrophication}
+      OXIGRAPH_URL: http://oxigraph:7878
+    volumes:
+      - ./configs:/app/configs
+      - ./data:/app/data
+    command: ["python", "-m", "src.etl.load_to_postgis"]
+
+  # Часть 4 (веб-ГИС и FastAPI: docker compose --profile api up --build api)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["api"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./configs:/app/configs
+      - ./data:/app/data
+      - ./frontend:/app/frontend
+      - ./src:/app/src
+    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
 volumes:
   graph_data:
+  postgis_data:

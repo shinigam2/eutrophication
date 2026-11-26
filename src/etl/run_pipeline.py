@@ -46,6 +46,7 @@ def run_etl_pipeline(
     start_date: str | None = None,
     end_date: str | None = None,
     force_refresh: bool = False,
+    to_postgis: bool = False,
 ) -> None:
     """Выполняет полный или инкрементальный (--lake) цикл Части 1."""
     t_total = time.time()
@@ -101,6 +102,12 @@ def run_etl_pipeline(
     print("\n[ШАГ 7/7] Инженерия признаков и сборка витрин + dataset_passport.json...")
     build_all_features()
 
+    if to_postgis:
+        print("\n[ШАГ 8/8] Загрузка контуров и витрин в PostgreSQL + PostGIS...")
+        from src.etl.load_to_postgis import load_all_to_postgis
+
+        load_all_to_postgis()
+
     print("\n" + "=" * 100)
     print(f"ЧАСТЬ 1 УСПЕШНО ЗАВЕРШЕНА ЗА {time.time() - t_total:.1f} С!")
     print("=" * 100)
@@ -126,6 +133,11 @@ def main() -> None:
         action="store_true",
         help="Пропустить пересборку GLORIA и таблиц БГУ",
     )
+    parser.add_argument(
+        "--to-postgis",
+        action="store_true",
+        help="После сборки витрин дополнительно загрузить все таблицы и контуры в PostgreSQL + PostGIS",
+    )
     parser.add_argument("--workers", type=int, default=4, help="Число процессов для Sentinel-2")
     parser.add_argument("--start", default=None, help="Дата начала ГГГГ-ММ-ДД")
     parser.add_argument("--end", default=None, help="Дата конца ГГГГ-ММ-ДД")
@@ -140,6 +152,7 @@ def main() -> None:
         start_date=args.start,
         end_date=args.end,
         force_refresh=args.force_refresh,
+        to_postgis=args.to_postgis,
     )
 
 

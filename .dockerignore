@@ -1,0 +1,15 @@
+.git/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+data/raw/
+data/interim/diagnostics/
+docs/
+*.pdf
+*.log
+.DS_Store
+.vscode/
+.idea/
