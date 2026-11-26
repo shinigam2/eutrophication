@@ -1,4 +1,4 @@
-"""Записывает водоёмы, прогнозы и наблюдения в Turtle или Oxigraph."""
+"""Записывает водоёмы, прогнозы и наблюдения и запрашивает прогнозы из Oxigraph."""
 
 import argparse
 from calendar import monthrange
@@ -6,6 +6,7 @@ from datetime import date
 import json
 from math import isfinite
 from pathlib import Path
+from string import Template
 from tempfile import NamedTemporaryFile
 from urllib.error import HTTPError
 from urllib.parse import quote
@@ -22,6 +23,7 @@ DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 DEFAULT_GRAPH = DATA_DIR / "knowledge_graph" / "graph.ttl"
 DEFAULT_GEOJSON = DATA_DIR / "reference" / "lakes.geojson"
 DEFAULT_PREDICTIONS = DATA_DIR / "processed" / "result.json"
+DEFAULT_ENDPOINT = "http://127.0.0.1:7878"
 PREFIXES = f"""
 PREFIX eutro: <{BASE_IRI}>
 PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
@@ -42,13 +44,14 @@ WHERE {
 }
 """
 
-HISTORY = """
+HISTORY = Template("""
 SELECT ?waterBodyId ?waterBody ?periodStart ?periodEnd ?predictedUgL ?thresholdUgL
        ?alertStatus ?observedUgL ?obsStatus
 WHERE {
   {
     SELECT DISTINCT ?water ?periodStart ?periodEnd
     WHERE {
+      $period_values
       VALUES ?kind { eutro:Forecast eutro:Observation }
       ?entry a ?kind ; eutro:waterBody ?water ; eutro:period ?period .
       ?period eutro:start ?periodStart ; eutro:end ?periodEnd .
@@ -60,11 +63,14 @@ WHERE {
   BIND(COALESCE(?name, ?waterBodyId) AS ?waterBody)
   OPTIONAL {
     ?forecast a eutro:Forecast ; eutro:waterBody ?water ; eutro:period ?forecastPeriod ;
-        eutro:chlorophyllUgL ?predictedUgL ; eutro:usesRule ?rule .
+        eutro:chlorophyllUgL ?predictedUgL .
     ?forecastPeriod eutro:start ?periodStart .
-    ?rule eutro:thresholdUgL ?thresholdUgL .
-    OPTIONAL { ?alert a eutro:Alert ; eutro:forForecast ?forecast . }
-    BIND(IF(BOUND(?alert), "warning", "below_threshold") AS ?alertStatus)
+    OPTIONAL {
+      ?forecast eutro:usesRule ?rule .
+      ?rule eutro:thresholdUgL ?thresholdUgL .
+      OPTIONAL { ?alert a eutro:Alert ; eutro:forForecast ?forecast . }
+      BIND(IF(BOUND(?alert), "warning", "below_threshold") AS ?alertStatus)
+    }
   }
   OPTIONAL {
     ?observation a eutro:Observation ; eutro:waterBody ?water ; eutro:period ?observationPeriod ;
@@ -72,9 +78,10 @@ WHERE {
     ?observationPeriod eutro:start ?periodStart .
     OPTIONAL { ?observation eutro:obsStatus ?obsStatus . }
   }
+  $filters
 }
 ORDER BY ?periodStart ?waterBody
-"""
+""")
 
 
 def parse_period_start(value):
@@ -265,8 +272,16 @@ def apply_updates(graph_path, endpoint, *operations):
     return None
 
 
-def show_history(graph, water_body_id, *, endpoint=None):
-    query = PREFIXES + HISTORY
+def read_history(graph, water_body_id, *, endpoint=None, period_start=None):
+    filters = []
+    if water_body_id is not None:
+        id_literal = json.dumps(water_body_id, ensure_ascii=False)
+        filters.append(f"FILTER (?waterBodyId = {id_literal})")
+    period_values = ""
+    if period_start is not None:
+        period_values = f'VALUES ?periodStart {{ "{period_start}"^^xsd:date }}'
+        filters.append("FILTER (BOUND(?predictedUgL))")
+    query = PREFIXES + HISTORY.substitute(period_values=period_values, filters="\n  ".join(filters))
     if endpoint is None:
         payload = graph.query(query).serialize(format="json")
     else:
@@ -277,18 +292,18 @@ def show_history(graph, water_body_id, *, endpoint=None):
     rows = []
     for binding in result["results"]["bindings"]:
         row = {column: binding.get(column, {}).get("value") for column in columns}
-        if water_body_id is not None and row["waterBodyId"] != water_body_id:
-            continue
         for column in ("predictedUgL", "thresholdUgL", "observedUgL"):
             if row[column] is not None:
                 row[column] = float(row[column])
         rows.append(row)
-    print(json.dumps(rows, ensure_ascii=False, indent=2))
+    return rows
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=("import-ttl", "import-forecasts", "sync-lakes", "forecast", "observe", "history"))
+    parser.add_argument(
+        "phase", choices=("import-ttl", "import-forecasts", "sync-lakes", "forecast", "observe", "history", "get-forecast")
+    )
     parser.add_argument("--graph", type=Path, help="путь к Turtle-файлу")
     parser.add_argument("--endpoint", help="адрес Oxigraph, например http://127.0.0.1:7878")
     parser.add_argument("--geojson", type=Path, help="файл контуров для команды sync-lakes")
@@ -349,22 +364,39 @@ def main():
 
     if args.geojson is not None:
         parser.error("--geojson доступен только для sync-lakes")
-    if args.phase == "history":
-        if any(field is not None for field in record_fields):
-            parser.error("history принимает только --water-body-id, --graph и --endpoint")
-    else:
-        if not args.water_body_id or args.period_start is None or args.value is None:
-            parser.error("укажи --water-body-id, --period-start и --value")
-        operation = insert_record(args.phase, args.water_body_id, args.period_start, args.value, args.name)
+    if args.phase in ("history", "get-forecast"):
+        if args.graph is not None or args.name is not None or args.value is not None:
+            parser.error(f"для {args.phase} используй Oxigraph, --graph, --name и --value недоступны")
+        if args.phase == "get-forecast" and (not args.water_body_id or args.period_start is None):
+            parser.error("для get-forecast укажи --water-body-id и --period-start")
+        if args.phase == "history" and args.period_start is not None:
+            parser.error("для просмотра прогноза за одну декаду используй get-forecast")
 
+        endpoint = args.endpoint or DEFAULT_ENDPOINT
+        try:
+            rows = read_history(None, args.water_body_id, endpoint=endpoint, period_start=args.period_start)
+        except (OSError, ValueError) as error:
+            parser.exit(1, f"Ошибка при работе с {endpoint}\n{error}\n")
+        if args.phase == "get-forecast":
+            if not rows:
+                parser.exit(1, f"Прогноз для {args.water_body_id} за декаду с {args.period_start} не найден.\n")
+            if len(rows) > 1:
+                parser.exit(1, f"Для {args.water_body_id} за декаду с {args.period_start} найдено несколько записей.\n")
+            print(json.dumps(rows[0], ensure_ascii=False, indent=2))
+        else:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+        return
+
+    if not args.water_body_id or args.period_start is None or args.value is None:
+        parser.error("укажи --water-body-id, --period-start и --value")
+    operation = insert_record(args.phase, args.water_body_id, args.period_start, args.value, args.name)
     try:
         if args.phase == "forecast":
             graph = apply_updates(graph_path, args.endpoint, SEED_RULE, operation, CREATE_ALERTS)
-        elif args.phase == "observe":
-            graph = apply_updates(graph_path, args.endpoint, operation)
         else:
-            graph = load_graph(graph_path) if args.endpoint is None else None
-        show_history(graph, args.water_body_id, endpoint=args.endpoint)
+            graph = apply_updates(graph_path, args.endpoint, operation)
+        rows = read_history(graph, args.water_body_id, endpoint=args.endpoint)
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
     except (OSError, ValueError, SyntaxError, ParserError, Timeout) as error:
         parser.exit(1, f"Ошибка при работе с {args.endpoint or graph_path}\n{error}\n")
 
