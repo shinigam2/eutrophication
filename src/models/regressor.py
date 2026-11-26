@@ -10,62 +10,47 @@ from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+try:
+    from src.models.features import OPTICAL_FEATURE_COLS, build_optical_features
+except ImportError:
+    from features import OPTICAL_FEATURE_COLS, build_optical_features
+
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SAVED_MODELS_DIR = Path(__file__).resolve().parent / "saved_models"
-
-
-def build_optical_features(df: pd.DataFrame, prefix: str = "") -> pd.DataFrame:
-    """Формирует устойчивые к атмосфере спектральные признаки (работает для GLORIA, LAB и SATELLITE)."""
-    bands = ["b02_blue", "b03_green", "b04_red", "b05_rededge1", "b06_rededge2", "b08_nir"]
-    out = pd.DataFrame(index=df.index)
-
-    for b in bands:
-        col = f"{prefix}{b}"
-        if col not in df.columns and f"{b}_current" in df.columns:
-            col = f"{b}_current"
-        out[b] = pd.to_numeric(df[col], errors="coerce")
-
-    eps = 1e-6
-    out["ndci"] = (out["b05_rededge1"] - out["b04_red"]) / (out["b05_rededge1"] + out["b04_red"] + eps)
-    out["ndti"] = (out["b04_red"] - out["b03_green"]) / (out["b04_red"] + out["b03_green"] + eps)
-    out["b03_b02_ratio"] = out["b03_green"] / (out["b02_blue"].replace(0, np.nan))
-    out["b04_b02_ratio"] = out["b04_red"] / (out["b02_blue"].replace(0, np.nan))
-    out["b05_b04_ratio"] = out["b05_rededge1"] / (out["b04_red"].replace(0, np.nan))
-    out["b06_b04_ratio"] = out["b06_rededge2"] / (out["b04_red"].replace(0, np.nan))
-
-    band_sum = out[bands].sum(axis=1).replace(0, np.nan)
-    for b in bands:
-        out[f"{b}_norm"] = out[b] / band_sum
-
-    feature_cols = [
-        "ndci", "ndti",
-        "b03_b02_ratio", "b04_b02_ratio", "b05_b04_ratio", "b06_b04_ratio",
-        "b02_blue_norm", "b03_green_norm", "b04_red_norm",
-        "b05_rededge1_norm", "b06_rededge2_norm", "b08_nir_norm",
-    ]
-    return out[feature_cols]
+GLORIA_MAX_CHL_UG_L = 60.0  # Оптимальный порог против зарубежных гиперэвтрофных выбросов
 
 
 def main() -> None:
     SAVED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1. Обучение на пресноводных озёрах GLORIA
+    # 1. Загружаем и очищаем GLORIA (включаем чистые coastal, убираем other и экстремальный хвост)
     gloria = pd.read_parquet(ROOT_DIR / "data/interim/gloria_sentinel2_pairs.parquet")
-    gloria = gloria[gloria["is_inland_lake"] == True].dropna(subset=["chl_a_ug_l"]).reset_index(drop=True)
+    gloria = gloria[
+        (gloria["water_body_type"] != "other")
+        & (gloria["chl_a_ug_l"] > 0)
+        & (gloria["chl_a_ug_l"] <= GLORIA_MAX_CHL_UG_L)
+    ].dropna(subset=["chl_a_ug_l", "b02_blue", "b03_green", "b04_red"]).reset_index(drop=True)
 
-    X_train = build_optical_features(gloria, prefix="")
+    X_train = build_optical_features(gloria, prefix="", subtract_glint=False)
     y_train_log = np.log1p(gloria["chl_a_ug_l"].to_numpy())
 
-    # 2. Независимый экзамен на 36 пробах БГУ
+    # 2. Независимый экзамен на 36 реальных пробах БГУ (с вычитанием блика 0.8 * B11)
     lab = pd.read_parquet(ROOT_DIR / "data/processed/features_lab.parquet")
-    X_test = build_optical_features(lab, prefix="s2_")
+    X_test = build_optical_features(lab, prefix="s2_", subtract_glint=True)
     y_test = lab["chl_a_lab_ug_l"].to_numpy()
     y_mishra = lab["s2_chl_a_est_ug_l"].to_numpy()
 
-    mishra_mae = mean_absolute_error(y_test, y_mishra)
+    mishra_mae = float(mean_absolute_error(y_test, y_mishra))
+    mishra_rmse = float(root_mean_squared_error(y_test, y_mishra))
     mishra_rho, _ = spearmanr(y_test, y_mishra)
-    print("=== РЕГРЕССИЯ: Экзамен на 36 пробах БГУ (2018–2019) ===")
-    print(f"[Baseline] Mishra (2012) | MAE: {mishra_mae:.2f} мкг/л | Spearman rho: {mishra_rho:+.3f}")
+
+    print(f"=== МОДЕЛЬ 1 (РЕГРЕССИЯ ТЕКУЩЕГО ХЛОРОФИЛЛА) ===")
+    print(f"Обучающая выборка GLORIA (<= {GLORIA_MAX_CHL_UG_L:.0f} мкг/л, без 'other'): {len(gloria)} строк")
+    print(f"Экзамен на 36 пробах БГУ (реальная медиана: {np.median(y_test):.2f} мкг/л):")
+    print(
+        f"[Baseline] Mishra (2012) | MAE: {mishra_mae:.2f} | RMSE: {mishra_rmse:.2f} | "
+        f"Spearman rho: {mishra_rho:+.3f} | Медиана: {np.median(y_mishra):.2f}"
+    )
 
     models = {
         "Ridge": Pipeline([
@@ -87,6 +72,7 @@ def main() -> None:
     best_name = None
     best_mae = float("inf")
     best_artifact = None
+    all_results = {}
 
     for name, model in models.items():
         model.fit(X_train, y_train_log)
@@ -95,8 +81,19 @@ def main() -> None:
         mae = float(mean_absolute_error(y_test, y_pred))
         rmse = float(root_mean_squared_error(y_test, y_pred))
         rho, _ = spearmanr(y_test, y_pred)
+        med = float(np.median(y_pred))
 
-        print(f"[{name:8s}]               | MAE: {mae:.2f} мкг/л | RMSE: {rmse:.2f} | Spearman rho: {rho:+.3f}")
+        all_results[name] = {
+            "mae_ug_l": round(mae, 3),
+            "rmse_ug_l": round(rmse, 3),
+            "spearman_rho": round(float(rho), 3),
+            "pred_median_ug_l": round(med, 3),
+        }
+
+        print(
+            f"[{name:8s}]               | MAE: {mae:.2f} | RMSE: {rmse:.2f} | "
+            f"Spearman rho: {rho:+.3f} | Медиана: {med:.2f}"
+        )
 
         if mae < best_mae:
             best_mae = mae
@@ -104,15 +101,23 @@ def main() -> None:
             best_artifact = {
                 "model_name": name,
                 "model": model,
-                "feature_cols": list(X_train.columns),
+                "feature_cols": OPTICAL_FEATURE_COLS,
+                "gloria_max_chl_ug_l": GLORIA_MAX_CHL_UG_L,
+                "train_rows": int(len(gloria)),
                 "bsu_mae_ug_l": round(mae, 3),
                 "bsu_rmse_ug_l": round(rmse, 3),
                 "bsu_spearman_rho": round(float(rho), 3),
+                "mishra_baseline": {
+                    "mae_ug_l": round(mishra_mae, 3),
+                    "rmse_ug_l": round(mishra_rmse, 3),
+                    "spearman_rho": round(float(mishra_rho), 3),
+                },
+                "candidates": all_results,
             }
 
     save_path = SAVED_MODELS_DIR / "regressor.joblib"
     joblib.dump(best_artifact, save_path)
-    print(f"\n[OK] Лучший регрессор ({best_name}, MAE={best_mae:.2f}) сохранён в: {save_path}")
+    print(f"\n[OK] Лучший регрессор ({best_name}, MAE={best_mae:.2f} мкг/л) сохранён в: {save_path}")
 
 
 if __name__ == "__main__":
