@@ -1,0 +1,70 @@
+{
+  "generated_at_utc": "2026-11-26T16:34:22Z",
+  "model_1_current_chlorophyll": {
+    "winner": "Ridge",
+    "train_dataset": "GLORIA (<= 60.0 ug/L, without 'other')",
+    "train_rows": 4737,
+    "validation_dataset": "BSU lab measurements (36 samples, 2018-2019, zero-shot)",
+    "bsu_mae_ug_l": 2.753,
+    "bsu_rmse_ug_l": 3.208,
+    "bsu_spearman_rho": 0.814,
+    "mishra_baseline": {
+      "mae_ug_l": 7.802,
+      "rmse_ug_l": 8.764,
+      "spearman_rho": -0.249
+    },
+    "candidates": {
+      "Ridge": {
+        "mae_ug_l": 2.753,
+        "rmse_ug_l": 3.208,
+        "spearman_rho": 0.814,
+        "pred_median_ug_l": 5.857
+      },
+      "LightGBM": {
+        "mae_ug_l": 2.868,
+        "rmse_ug_l": 4.291,
+        "spearman_rho": 0.686,
+        "pred_median_ug_l": 3.071
+      }
+    }
+  },
+  "model_2_forecast_10d": {
+    "winner": "RandomForest",
+    "train_period": "2018-2024",
+    "train_rows": 601,
+    "test_period": "2025-2026",
+    "test_rows": 227,
+    "test_mae_ug_l": 2.97,
+    "test_rmse_ug_l": 7.127,
+    "test_spearman_rho": 0.593,
+    "naive_baseline": {
+      "mae_ug_l": 4.479,
+      "rmse_ug_l": 9.589,
+      "spearman_rho": 0.418
+    },
+    "candidates": {
+      "Ridge": {
+        "mae_ug_l": 3.255,
+        "rmse_ug_l": 7.3,
+        "spearman_rho": 0.448
+      },
+      "RandomForest": {
+        "mae_ug_l": 2.97,
+        "rmse_ug_l": 7.127,
+        "spearman_rho": 0.593
+      },
+      "LightGBM": {
+        "mae_ug_l": 3.063,
+        "rmse_ug_l": 7.14,
+        "spearman_rho": 0.555
+      }
+    },
+    "top_drivers": [
+      "area_km2",
+      "mean_depth_m",
+      "chl_a_current_ug_l",
+      "precip_sum_14d",
+      "chl_a_lag10d"
+    ]
+  }
+}
