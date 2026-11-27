@@ -345,13 +345,13 @@ def test_part3_graph_cli_integration():
                     n = int(self.headers.get("Content-Length") or 0)
                     _ = self.rfile.read(n)
                     payload = json.dumps({
-                        "head": {"vars": ["waterBodyId", "waterBody", "periodStart", "periodEnd",
-                                          "predictedUgL", "thresholdUgL", "alertStatus", "observedUgL", "obsStatus"]},
+                        "head": {"vars": ["waterBodyId", "waterBody", "baseDate", "targetDate", "observedDate",
+                                          "predictedUgL", "thresholdUgL", "alertStatus", "observedUgL", "obsStatus", "differenceUgL"]},
                         "results": {"bindings": [{
                             "waterBodyId": {"type": "literal", "value": "naroch"},
                             "waterBody": {"type": "literal", "value": "Озеро Нарочь"},
-                            "periodStart": {"type": "literal", "value": "2025-07-11"},
-                            "periodEnd": {"type": "literal", "value": "2025-07-20"},
+                            "baseDate": {"type": "literal", "value": "2025-07-11"},
+                            "targetDate": {"type": "literal", "value": "2025-07-21"},
                             "predictedUgL": {"type": "literal", "value": "28.0"},
                             "thresholdUgL": {"type": "literal", "value": "25.0"},
                             "alertStatus": {"type": "literal", "value": "warning"},

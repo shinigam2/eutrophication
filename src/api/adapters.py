@@ -632,16 +632,18 @@ def _as_list(v) -> List[str]:
     return [str(v)] if isinstance(v, str) else [str(x) for x in v]
 
 
-def _normalize_decade_start(d: date) -> date:
-    """Приводит произвольную дату (в т.ч. лабораторной пробы) к началу календарной декады (1/11/21),
-    как того требует Часть 3 (graph_cli.parse_period_start / insert_record)."""
+def _forecast_target_date(d: date) -> date:
+    """Целевая дата прогноза (+10 дней / следующая календарная декада 1/11/21),
+    согласованная с result.json Части 2 и eutro:targetDate Части 3."""
     if isinstance(d, str):
         d = date.fromisoformat(d[:10])
-    if d.day <= 10:
-        return d.replace(day=1)
-    if d.day <= 20:
+    if d.day == 1:
         return d.replace(day=11)
-    return d.replace(day=21)
+    if d.day == 11:
+        return d.replace(day=21)
+    if d.day == 21:
+        return d.replace(year=d.year + 1, month=1, day=1) if d.month == 12 else d.replace(month=d.month + 1, day=1)
+    return date.fromordinal(d.toordinal() + 10)
 
 
 def to_verdict(o) -> AlertVerdict:
@@ -712,11 +714,13 @@ class RealGraphEngine:
 class GraphCliEngine:
     """Адаптер к реальной Части 3 (src/knowledge_graph/graph_cli.py + data/knowledge_graph/graph.ttl + Oxigraph).
 
-    Выполняет настоящие SPARQL-правила Части 3 (CREATE_ALERTS и HISTORY) поверх RDF-графа:
+    Выполняет настоящие SPARQL-правила Части 3 (eutro:Forecast с targetDate/baseDate,
+    правило eutro:Alert при ?value >= ?threshold и запрос SEARCH) поверх RDF-графа:
       - alertStatus == "warning"         -> GREEN/RED: "RED"   (chl >= eutro:thresholdUgL)
       - alertStatus == "below_threshold" -> GREEN/RED: "GREEN" (chl <  eutro:thresholdUgL)
-    Если задан OXIGRAPH_URL и Oxigraph доступен — сначала проверяет сохранённый прогноз в Oxigraph,
-    иначе выполняет те же SPARQL-правила локально в памяти через rdflib без записи в graph.ttl на диске.
+    Если задан OXIGRAPH_URL и Oxigraph доступен — сначала проверяет сохранённый прогноз в Oxigraph
+    через read_history(..., target_date=...), иначе выполняет те же SPARQL-правила локально в памяти
+    через rdflib без записи в graph.ttl на диске.
 
     Расширенный контекст (ООПТ, запрет хим. альгицидов, каскад, глубина/стратификация, порог внимания
     15 мкг/л, метеофакторы, вероятности, индекс Карлсона TSI и рекомендации) сохраняется через
@@ -742,7 +746,10 @@ class GraphCliEngine:
         self._XSD = XSD
 
         self.mod = importlib.import_module(module)
-        required = ("load_graph", "CREATE_ALERTS", "HISTORY", "PREFIXES", "BASE_IRI", "ALERT_RULE_ID", "SEED_RULE", "read_history")
+        required = (
+            "load_graph", "insert_records", "SEARCH", "SEARCH_PATTERNS",
+            "PREFIXES", "BASE_IRI", "ALERT_RULE_ID", "SEED_RULE", "read_history",
+        )
         missing = [name for name in required if not hasattr(self.mod, name)]
         if missing:
             raise IntegrationError(f"В модуле {module} отсутствуют атрибуты Части 3: {missing}")
@@ -766,16 +773,14 @@ class GraphCliEngine:
             base_graph.update(self.mod.PREFIXES + self.mod.SEED_RULE)
 
         # Отделяем статические триплы (правила, WaterBody, будущие свойства ООПТ/каскада) от ранее
-        # записанных Forecast/Observation/Alert/Period, чтобы вызовы assess() не конфликтовали друг с другом.
+        # записанных Forecast/Observation/Alert, чтобы вызовы assess() не конфликтовали друг с другом.
         dynamic_types = (self._eutro.Forecast, self._eutro.Observation, self._eutro.Alert)
         dynamic_subjects = {
             s for dtype in dynamic_types for s in base_graph.subjects(RDF.type, dtype)
         }
-        period_subjects = set(base_graph.subjects(self._eutro.start, None))
-        skip_subjects = dynamic_subjects | period_subjects
         self._base_triples = [
             tr for tr in base_graph
-            if tr[0] not in skip_subjects and tr[2] not in dynamic_subjects
+            if tr[0] not in dynamic_subjects and tr[2] not in dynamic_subjects
         ]
 
         # Считываем порог непосредственно из RDF-графа (eutro:chlorophyll-alert eutro:thresholdUgL ?t)
@@ -790,10 +795,29 @@ class GraphCliEngine:
         for subj, obj in base_graph.subject_objects(self._eutro.waterBodyId):
             self._registered_waters[str(obj)] = subj
 
-        # Предкомпилируем точные SPARQL-правила Части 3 (ускоряет вызов с ~160 мс до ~3.5 мс)
-        self._create_alerts = prepareUpdate(self.mod.PREFIXES + self.mod.CREATE_ALERTS)
-        self._history_query = prepareQuery(
-            self.mod.PREFIXES + self.mod.HISTORY.substitute(period_values="", filters="")
+        # Предкомпилируем SPARQL-правило оповещения Части 3 (?value >= ?threshold -> eutro:Alert)
+        # и точный поисковый запрос graph_cli.SEARCH (ускоряет вызов с ~90 мс до ~2.3 мс).
+        self._create_alerts = prepareUpdate(
+            self.mod.PREFIXES + """
+            INSERT {
+              ?alert a eutro:Alert ; eutro:forForecast ?record ; eutro:triggeredRule ?rule .
+            }
+            WHERE {
+              ?record a eutro:Forecast ; eutro:chlorophyllUgL ?value ; eutro:usesRule ?rule .
+              ?rule eutro:thresholdUgL ?threshold .
+              FILTER(?value >= ?threshold)
+              BIND(IRI(CONCAT(STR(?record), "/alert")) AS ?alert)
+            }
+            """
+        )
+        self._search_query = prepareQuery(
+            self.mod.PREFIXES + self.mod.SEARCH.substitute(
+                record_pattern=self.mod.SEARCH_PATTERNS["forecast"],
+                date_filters="",
+                filters="",
+                sort_direction="ASC",
+                pagination="",
+            )
         )
 
     def describe(self) -> str:
@@ -801,11 +825,11 @@ class GraphCliEngine:
         oxi = f", Oxigraph={self.oxigraph_url}" if self.oxigraph_url else ""
         return f"{src}, порог {self.threshold_ug_l:g} мкг/л, 2 уровня GREEN/RED{oxi}"
 
-    def _try_oxigraph(self, wb_id: str, period_start: date, chl: float) -> Optional[Tuple[str, float]]:
+    def _try_oxigraph(self, wb_id: str, target_date: date, chl: float) -> Optional[Tuple[str, float]]:
         if not self.oxigraph_url:
             return None
         try:
-            rows = self.mod.read_history(None, wb_id, endpoint=self.oxigraph_url, period_start=period_start)
+            rows = self.mod.read_history(None, wb_id, endpoint=self.oxigraph_url, target_date=target_date)
         except (OSError, ValueError):
             return None
         for row in rows:
@@ -816,7 +840,9 @@ class GraphCliEngine:
                 return str(status), float(thr)
         return None
 
-    def _evaluate_rdflib(self, wb_id: str, wb_name: Optional[str], period_start: date, chl: float) -> Tuple[str, float]:
+    def _evaluate_rdflib(
+        self, wb_id: str, wb_name: Optional[str], base_date: date, target_date: date, chl: float
+    ) -> Tuple[str, float]:
         Graph, Literal, RDF, URIRef, XSD = self._Graph, self._Literal, self._RDF, self._URIRef, self._XSD
         eutro = self._eutro
 
@@ -826,31 +852,27 @@ class GraphCliEngine:
 
         water_segment = quote(str(wb_id), safe="")
         water = self._registered_waters.get(str(wb_id)) or URIRef(f"{self.mod.BASE_IRI}water/{water_segment}")
-        last_day = monthrange(period_start.year, period_start.month)[1]
-        period_end = period_start.replace(day=last_day if period_start.day == 21 else period_start.day + 9)
-        period = URIRef(f"{self.mod.BASE_IRI}period/{period_start.isoformat()}")
-        record = URIRef(f"{self.mod.BASE_IRI}forecast/{water_segment}/{period_start.isoformat()}")
+        record = URIRef(f"{self.mod.BASE_IRI}forecast/{water_segment}/date/{target_date.isoformat()}")
 
         work.add((water, RDF.type, eutro.WaterBody))
         work.add((water, eutro.waterBodyId, Literal(str(wb_id))))
         if wb_name and not list(work.objects(water, eutro.name)):
             work.add((water, eutro.name, Literal(str(wb_name))))
-        work.add((period, eutro.start, Literal(period_start.isoformat(), datatype=XSD.date)))
-        work.add((period, eutro.end, Literal(period_end.isoformat(), datatype=XSD.date)))
         work.add((record, RDF.type, eutro.Forecast))
         work.add((record, eutro.waterBody, water))
-        work.add((record, eutro.period, period))
+        work.add((record, eutro.targetDate, Literal(target_date.isoformat(), datatype=XSD.date)))
+        work.add((record, eutro.baseDate, Literal(base_date.isoformat(), datatype=XSD.date)))
         work.add((record, eutro.chlorophyllUgL, Literal(float(chl))))
         work.add((record, eutro.usesRule, self._rule_uri))
 
         work.update(self._create_alerts)
-        rows = list(work.query(self._history_query))
+        rows = list(work.query(self._search_query))
         for row in rows:
-            if str(row.waterBodyId) == str(wb_id) and str(row.periodStart) == period_start.isoformat():
+            if str(row.waterBodyId) == str(wb_id) and str(row.targetDate) == target_date.isoformat():
                 status = str(row.alertStatus) if row.alertStatus is not None else "below_threshold"
                 thr = _num(row.thresholdUgL) or self.threshold_ug_l
                 return status, float(thr)
-        raise IntegrationError(f"SPARQL-запрос Части 3 (HISTORY) не вернул запись для {wb_id}/{period_start}")
+        raise IntegrationError(f"SPARQL-запрос Части 3 (SEARCH) не вернул запись для {wb_id}/{target_date}")
 
     def assess(
         self,
@@ -866,13 +888,14 @@ class GraphCliEngine:
         lake_meta: Optional[dict] = None,
         registry: Optional[Dict[str, dict]] = None,
     ) -> AlertVerdict:
-        period_start = _normalize_decade_start(d)
-        oxi_hit = self._try_oxigraph(wb_id, period_start, chl)
+        base_date = d if isinstance(d, date) else date.fromisoformat(str(d)[:10])
+        target_date = _forecast_target_date(base_date)
+        oxi_hit = self._try_oxigraph(wb_id, target_date, chl)
         if oxi_hit is not None:
             alert_status, threshold = oxi_hit
             backend = "Oxigraph"
         else:
-            alert_status, threshold = self._evaluate_rdflib(wb_id, wb_name, period_start, chl)
+            alert_status, threshold = self._evaluate_rdflib(wb_id, wb_name, base_date, target_date, chl)
             backend = f"rdflib/{self.ontology_path.name}" if self.ontology_path else "rdflib"
 
         level = ALERT_LEVEL_MAP.get(alert_status.upper())
@@ -882,7 +905,8 @@ class GraphCliEngine:
         cmp_op = "≥" if level == "RED" else "<"
         base_reasons = [
             f"Граф знаний (Часть 3, {backend}, правило {self.mod.ALERT_RULE_ID}): "
-            f"прогноз Chl-a {float(chl):.1f} мкг/л {cmp_op} порога {threshold:g} мкг/л → {alert_status} ({level})"
+            f"прогноз Chl-a на {target_date.isoformat()} = {float(chl):.1f} мкг/л "
+            f"{cmp_op} порога {threshold:g} мкг/л → {alert_status} ({level})"
         ]
         return enrich_verdict_with_stubs(
             level,
@@ -907,10 +931,10 @@ def load_graph_engine(
     mod = importlib.import_module(module)
     if getattr(mod, "WaterKnowledgeGraphEngine", None) is not None:
         return RealGraphEngine(module, ontology_path)
-    if hasattr(mod, "CREATE_ALERTS") and hasattr(mod, "HISTORY"):
+    if hasattr(mod, "SEARCH") and hasattr(mod, "insert_records"):
         return GraphCliEngine(module, ontology_path, oxigraph_url)
     raise IntegrationError(
-        f"В модуле {module} нет ни класса WaterKnowledgeGraphEngine, ни SPARQL-правил graph_cli (CREATE_ALERTS/HISTORY)"
+        f"В модуле {module} нет ни класса WaterKnowledgeGraphEngine, ни SPARQL-правил graph_cli (SEARCH/insert_records)"
     )
 
 

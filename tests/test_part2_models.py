@@ -92,15 +92,23 @@ def test_predict_lake_date_validation_and_part3_import():
         assert live["attention_prob"] == rec["attention_prob"]
         assert live["bloom_prob"] == rec["bloom_prob"]
 
-    # Прямая проверка контракта Часть 2 -> Часть 3 (SPARQL-импорт result.json в памяти)
+    # Прямая проверка контракта Часть 2 -> Часть 3 (load_results + insert_records + search_records в памяти)
     from src.knowledge_graph import graph_cli
 
     g = graph_cli.load_graph(ROOT / "data/knowledge_graph/graph.ttl")
-    ops = graph_cli.forecast_import_operations(ROOT / "data/processed/result.json")
-    assert len(ops) == len(res_json["predictions"]) == 8
-    for op in ops:
-        g.update(op)
-    g.update(graph_cli.PREFIXES + graph_cli.CREATE_ALERTS)
+    forecasts, observations = graph_cli.load_results(ROOT / "data/processed/result.json")
+    assert len(forecasts) == len(observations) == len(res_json["predictions"]) == 8
+    g.update(graph_cli.PREFIXES + graph_cli.SEED_RULE)
+    g.update(graph_cli.PREFIXES + graph_cli.insert_records("observe", observations))
+    g.update(graph_cli.PREFIXES + graph_cli.insert_records("forecast", forecasts))
     for lid, rec in res_json["predictions"].items():
-        rows = graph_cli.read_history(g, lid, period_start=date.fromisoformat(rec["date"]))
-        assert rows and any(abs(float(r["predictedUgL"]) - rec["chl_a_pred_ug_l"]) < 0.01 for r in rows)
+        rows = graph_cli.search_records(
+            graph=g,
+            record_type="forecast",
+            water_body_id=lid,
+            target_date=date.fromisoformat(rec["date"]),
+        )
+        assert len(rows) == 1
+        assert abs(float(rows[0]["predictedUgL"]) - rec["chl_a_pred_ug_l"]) < 0.01
+        assert rows[0]["baseDate"] == rec["base_date"]
+        assert rows[0]["alertStatus"] in ("warning", "below_threshold")
