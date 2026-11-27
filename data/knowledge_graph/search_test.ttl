@@ -1,0 +1,72 @@
+@base <https://shinigam2.github.io/eutrophication/> .
+@prefix eutro: <https://shinigam2.github.io/eutrophication/> .
+@prefix water: <https://shinigam2.github.io/eutrophication/water/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+eutro:chlorophyll-alert eutro:thresholdUgL 25 .
+
+water:test-myastro a eutro:WaterBody ;
+    eutro:waterBodyId "test-myastro" ;
+    eutro:name "Мястро (тест)" .
+
+water:test-naroch a eutro:WaterBody ;
+    eutro:waterBodyId "test-naroch" ;
+    eutro:name "Нарочь (тест)" .
+
+# Мястро, 11 ноября. Прогноз ниже порога, есть наблюдение.
+<forecast/test-myastro/date/2026-11-11> a eutro:Forecast ;
+    eutro:waterBody water:test-myastro ;
+    eutro:baseDate "2026-11-01"^^xsd:date ;
+    eutro:targetDate "2026-11-11"^^xsd:date ;
+    eutro:chlorophyllUgL 18.5 ;
+    eutro:usesRule eutro:chlorophyll-alert .
+
+<observation/test-myastro/date/2026-11-11> a eutro:Observation ;
+    eutro:waterBody water:test-myastro ;
+    eutro:observedDate "2026-11-11"^^xsd:date ;
+    eutro:chlorophyllUgL 19.0 ;
+    eutro:obsStatus "valid" .
+
+# Мястро, 21 ноября. Предупреждение и расхождение +6 мкг/л.
+<forecast/test-myastro/date/2026-11-21> a eutro:Forecast ;
+    eutro:waterBody water:test-myastro ;
+    eutro:baseDate "2026-11-11"^^xsd:date ;
+    eutro:targetDate "2026-11-21"^^xsd:date ;
+    eutro:chlorophyllUgL 30.0 ;
+    eutro:usesRule eutro:chlorophyll-alert .
+
+<forecast/test-myastro/date/2026-11-21/alert> a eutro:Alert ;
+    eutro:forForecast <forecast/test-myastro/date/2026-11-21> ;
+    eutro:triggeredRule eutro:chlorophyll-alert .
+
+<observation/test-myastro/date/2026-11-21> a eutro:Observation ;
+    eutro:waterBody water:test-myastro ;
+    eutro:observedDate "2026-11-21"^^xsd:date ;
+    eutro:chlorophyllUgL 24.0 ;
+    eutro:obsStatus "valid" .
+
+# Мястро, 1 декабря. Прогноз ровно на пороге, наблюдения пока нет.
+<forecast/test-myastro/date/2026-12-01> a eutro:Forecast ;
+    eutro:waterBody water:test-myastro ;
+    eutro:baseDate "2026-11-21"^^xsd:date ;
+    eutro:targetDate "2026-12-01"^^xsd:date ;
+    eutro:chlorophyllUgL 25.0 ;
+    eutro:usesRule eutro:chlorophyll-alert .
+
+<forecast/test-myastro/date/2026-12-01/alert> a eutro:Alert ;
+    eutro:forForecast <forecast/test-myastro/date/2026-12-01> ;
+    eutro:triggeredRule eutro:chlorophyll-alert .
+
+# У Нарочи наблюдение есть только 11 ноября, а прогноз — на 21-е.
+<observation/test-naroch/date/2026-11-11> a eutro:Observation ;
+    eutro:waterBody water:test-naroch ;
+    eutro:observedDate "2026-11-11"^^xsd:date ;
+    eutro:chlorophyllUgL 10.5 ;
+    eutro:obsStatus "valid" .
+
+<forecast/test-naroch/date/2026-11-21> a eutro:Forecast ;
+    eutro:waterBody water:test-naroch ;
+    eutro:baseDate "2026-11-11"^^xsd:date ;
+    eutro:targetDate "2026-11-21"^^xsd:date ;
+    eutro:chlorophyllUgL 12.0 ;
+    eutro:usesRule eutro:chlorophyll-alert .
