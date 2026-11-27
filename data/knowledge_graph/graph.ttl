@@ -1,5 +1,4 @@
 @prefix eutro: <https://shinigam2.github.io/eutrophication/> .
-@prefix period: <https://shinigam2.github.io/eutrophication/period/> .
 @prefix water: <https://shinigam2.github.io/eutrophication/water/> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
 
