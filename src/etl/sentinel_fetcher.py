@@ -278,9 +278,15 @@ def _reproject_and_buffer(
     return geom_utm, buffered_utm
 
 
+MISHRA_VERTEX_NDCI = -86.115 / (2.0 * 194.325)  # ≈ -0.22157: минимум параболы (~4.50 мкг/л)
+
+
 def _compute_mishra_chl_a(ndci: float) -> float:
-    """Базовая эмпирическая формула Mishra & Mishra (2012): NDCI -> Chl-a (мкг/л)."""
-    val = 14.039 + 86.115 * ndci + 194.325 * (ndci ** 2)
+    """Базовая эмпирическая формула Mishra & Mishra (2012): NDCI -> Chl-a (мкг/л).
+    Левее вершины параболы (NDCI < -0.2216) фиксируем значение в минимуме, чтобы
+    ультрачистая вода не превращалась в ложное «гиперцветение» 70–85 мкг/л."""
+    ndci_eff = max(float(ndci), MISHRA_VERTEX_NDCI)
+    val = 14.039 + 86.115 * ndci_eff + 194.325 * (ndci_eff ** 2)
     return float(max(0.5, val))
 
 

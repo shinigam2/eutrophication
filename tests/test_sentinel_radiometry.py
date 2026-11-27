@@ -67,7 +67,8 @@ def test_optical_indices_and_mishra_carlson() -> None:
 
     # Проверка формулы Mishra & Mishra (2012) в контрольной точке NDCI = 0
     assert _compute_mishra_chl_a(0.0) == pytest.approx(14.039)
-    # Нижняя физическая граница 0.5 мкг/л
-    assert _compute_mishra_chl_a(-0.5) >= 0.5
+    # Монотонное ограничение в вершине параболы (-0.2216): отрицательный NDCI не должен раздуваться до 70–85 мкг/л
+    assert 4.4 <= _compute_mishra_chl_a(-0.85) <= 4.6
+    assert _compute_mishra_chl_a(-0.85) == pytest.approx(_compute_mishra_chl_a(-0.5), abs=1e-4)
     # Проверка Карлсона TSI(10) = 9.81 * ln(10) + 30.6
     assert _compute_carlson_tsi(10.0) == pytest.approx(9.81 * math.log(10.0) + 30.6)

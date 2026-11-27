@@ -128,3 +128,13 @@ def test_bsu_2018_2019_lab_mart_and_quality_report() -> None:
     assert matchup["matched_samples"] == 36
     # Подтверждаем, что наш оптический сигнал B04/B02 сильно коррелирует с реальной пробиркой БГУ
     assert matchup["spearman_b04_b02_vs_lab_chl_a"] > 0.70
+
+    # Проверяем отсутствие провалов в 1 DN (0.0001), согласованность NDCI/Chl-a и valid_decades_total
+    sat = pd.read_parquet(FEATURES_SAT_PARQUET)
+    assert qr["satellite_quality"]["valid_decades_total"] == len(sat)
+    assert (sat["b02_blue"] >= 0.0005).all() and (sat["b03_green"] >= 0.0005).all()
+    assert (sat["b04_red"] >= 0.0002).all() and (sat["b05_rededge1"] >= 0.0002).all()
+    ndci_recalc = (sat["b05_rededge1"] - sat["b04_red"]) / (sat["b05_rededge1"] + sat["b04_red"])
+    assert (sat["ndci_current"] - ndci_recalc).abs().max() < 1e-4
+    neg_ndci = sat[sat["ndci_current"] < -0.2216]
+    assert (neg_ndci["chl_a_est_current"] <= 4.6).all()

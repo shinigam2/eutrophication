@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-11-27T00:11:06Z",
+  "generated_at_utc": "2026-11-27T13:35:29Z",
   "forecast_horizon_days": 10,
   "predictions": {
     "batorino": {
@@ -28,15 +28,15 @@
     "kuzmichi": {
       "water_body_id": "kuzmichi",
       "base_date": "2026-11-11",
-      "chl_a_current_ug_l": 7.74,
+      "chl_a_current_ug_l": 4.39,
       "date": "2026-11-21",
-      "chl_a_pred_ug_l": 4.46,
-      "chl_a_pred_low_ug_l": 1.49,
-      "chl_a_pred_high_ug_l": 7.43,
+      "chl_a_pred_ug_l": 4.08,
+      "chl_a_pred_low_ug_l": 1.11,
+      "chl_a_pred_high_ug_l": 7.05,
       "attention_threshold_ug_l": 15.0,
       "bloom_threshold_ug_l": 25.0,
-      "attention_prob": 0.021,
-      "bloom_prob": 0.002,
+      "attention_prob": 0.015,
+      "bloom_prob": 0.001,
       "weather_context": {
         "temp_mean_14d": 3.6,
         "calm_fraction_7d": 0.57,
@@ -51,7 +51,7 @@
     "lotviny": {
       "water_body_id": "lotviny",
       "base_date": "2026-11-11",
-      "chl_a_current_ug_l": 3.06,
+      "chl_a_current_ug_l": 2.67,
       "date": "2026-11-21",
       "chl_a_pred_ug_l": 3.49,
       "chl_a_pred_low_ug_l": 0.52,
@@ -74,14 +74,14 @@
     "myadel": {
       "water_body_id": "myadel",
       "base_date": "2026-11-11",
-      "chl_a_current_ug_l": 3.81,
+      "chl_a_current_ug_l": 1.45,
       "date": "2026-11-21",
-      "chl_a_pred_ug_l": 3.37,
-      "chl_a_pred_low_ug_l": 0.4,
-      "chl_a_pred_high_ug_l": 6.34,
+      "chl_a_pred_ug_l": 3.23,
+      "chl_a_pred_low_ug_l": 0.26,
+      "chl_a_pred_high_ug_l": 6.2,
       "attention_threshold_ug_l": 15.0,
       "bloom_threshold_ug_l": 25.0,
-      "attention_prob": 0.007,
+      "attention_prob": 0.006,
       "bloom_prob": 0.0,
       "weather_context": {
         "temp_mean_14d": 3.6,
@@ -166,7 +166,7 @@
     "volchino": {
       "water_body_id": "volchino",
       "base_date": "2026-11-11",
-      "chl_a_current_ug_l": 0.35,
+      "chl_a_current_ug_l": 0.45,
       "date": "2026-11-21",
       "chl_a_pred_ug_l": 2.66,
       "chl_a_pred_low_ug_l": 0.1,

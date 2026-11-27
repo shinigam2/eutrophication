@@ -128,7 +128,7 @@ class HistoryResponse(BaseModel):
 class LabUploadRequest(BaseModel):
     water_body_id: str
     sample_date: Date
-    chl_a_lab_ug_l: float = Field(gt=0, le=1000, description="Лабораторный хлорофилл-а, мкг/л (физический диапазон)")
+    chl_a_lab_ug_l: float = Field(gt=0, le=500, description="Лабораторный хлорофилл-а, мкг/л (физический диапазон, совпадает с Частью 1)")
     secchi_depth_m: Optional[float] = Field(None, gt=0, le=50, description="Прозрачность по диску Секки, м")
     total_phosphorus_ug_l: Optional[float] = Field(None, gt=0, le=1000, description="Общий фосфор, мкг/л")
     source_note: str = Field("Загружено через веб-панель", max_length=300)

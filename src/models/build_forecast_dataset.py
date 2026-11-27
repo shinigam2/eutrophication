@@ -25,8 +25,10 @@ def main() -> None:
     X_opt = build_optical_features(df, prefix="", subtract_glint=True)
     df["chl_a_current_ug_l"] = np.clip(np.expm1(reg_artifact["model"].predict(X_opt)), 0.1, None)
 
-    # 2. Лаг за прошлую декаду (-10 дней) и динамика внутри каждого озера
-    df["chl_a_lag10d"] = df.groupby("water_body_id")["chl_a_current_ug_l"].shift(1)
+    # 2. Лаг за прошлую декаду (-10 дней) и динамика внутри каждого озера (строго <= 12 дн., без перескока через зиму/облака)
+    prev_date = df.groupby("water_body_id")["date"].shift(1)
+    prev_ok = (df["date"] - prev_date).dt.days <= 12
+    df["chl_a_lag10d"] = df.groupby("water_body_id")["chl_a_current_ug_l"].shift(1).where(prev_ok, np.nan)
     df["chl_a_delta_10d"] = df["chl_a_current_ug_l"] - df["chl_a_lag10d"]
 
     # 3. Целевое значение через +10 дней (строго по target_date_next_10d без утечки)

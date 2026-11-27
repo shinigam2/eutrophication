@@ -267,8 +267,11 @@ def build_lab_feature_mart(
     lakes_by_id: dict[str, WaterBodyConfig],
 ) -> pd.DataFrame:
     """Строит витрину лабораторного режима `features_lab` (БГУ 2018–2019 + Sentinel-2 ±10д + погода)."""
+    from src.etl.validate_data import _compute_mishra, _dark_artifact_mask
+
     s2 = scenes_df[~scenes_df["sun_glint_flag"]].copy()
     s2 = s2[s2["b11_swir1"].isna() | (s2["b11_swir1"] <= MAX_B11_HAZE_THRESHOLD)]
+    s2 = s2[~_dark_artifact_mask(s2)].copy()
     s2["dt"] = pd.to_datetime(s2["scene_date"])
 
     opt_cols = [
@@ -287,6 +290,12 @@ def build_lab_feature_mart(
         "chl_a_est_ug_l",
     ]
 
+    def _opt_float(val: Any) -> float:
+        return float(val) if pd.notna(val) else np.nan
+
+    def _opt_str(val: Any, default: str = "") -> str:
+        return str(val).strip() if pd.notna(val) and str(val).strip() else default
+
     lab_rows: list[dict[str, Any]] = []
     for _, r in lab_df.sort_values(["water_body_id", "sample_date"]).iterrows():
         lid = str(r["water_body_id"])
@@ -303,12 +312,12 @@ def build_lab_feature_mart(
             "water_body_id": lid,
             "date": s_date,
             "chl_a_lab_ug_l": float(r["chl_a_lab_ug_l"]),
-            "chl_a_filter_1_5_um_ug_l": float(r["chl_a_filter_1_5_um_ug_l"]),
-            "secchi_depth_m": float(r["secchi_depth_m"]),
-            "total_phosphorus_ug_l": float(r["total_phosphorus_ug_l"]),
-            "sample_type": str(r["sample_type"]),
-            "date_precision": str(r["date_precision"]),
-            "source_note": str(r["source_note"]),
+            "chl_a_filter_1_5_um_ug_l": _opt_float(r.get("chl_a_filter_1_5_um_ug_l")),
+            "secchi_depth_m": _opt_float(r.get("secchi_depth_m")),
+            "total_phosphorus_ug_l": _opt_float(r.get("total_phosphorus_ug_l")),
+            "sample_type": _opt_str(r.get("sample_type"), "web_upload"),
+            "date_precision": _opt_str(r.get("date_precision"), "exact"),
+            "source_note": _opt_str(r.get("source_note"), ""),
             "matched_s2_scenes_pm10d": int(len(sub)),
         }
         for c in opt_cols:
@@ -318,6 +327,8 @@ def build_lab_feature_mart(
                 if (len(sub) > 0 and sub[c].notna().any())
                 else np.nan
             )
+        if pd.notna(rec["s2_ndci"]):
+            rec["s2_chl_a_est_ug_l"] = round(_compute_mishra(float(rec["s2_ndci"])), 3)
         lab_rows.append(rec)
 
     out_df = pd.DataFrame(lab_rows)

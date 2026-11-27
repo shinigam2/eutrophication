@@ -1584,6 +1584,7 @@
 
     const inflows = (lake.cascade_inflow_from || []).filter(Boolean);
     const outflow = lake.cascade_outflow_to;
+    const reserveNames = { rossokhi: 'Россохи (резерв)' };
     let cascadeHtml = '';
     if (inflows.length || outflow) {
       const chips = [];
@@ -1591,13 +1592,17 @@
         const srcLake = S.lakesById[srcId];
         chips.push(srcLake
           ? `<button type="button" class="cascade-chip" data-jump="${esc(srcId)}">← Приток: ${esc(shortLakeName(srcLake.name))}</button>`
-          : `<span class="cascade-chip static">← ${esc(srcId)}</span>`);
+          : `<span class="cascade-chip static">← Приток: ${esc(reserveNames[srcId] || srcId)}</span>`);
       }
       if (outflow) {
         const dstLake = S.lakesById[outflow];
-        chips.push(dstLake
-          ? `<button type="button" class="cascade-chip" data-jump="${esc(outflow)}">Сток → ${esc(shortLakeName(dstLake.name))}</button>`
-          : `<span class="cascade-chip static">Сток → ${esc(outflow)}</span>`);
+        if (dstLake) {
+          chips.push(`<button type="button" class="cascade-chip" data-jump="${esc(outflow)}">Сток → ${esc(shortLakeName(dstLake.name))}</button>`);
+        } else if (String(outflow).toLowerCase() === 'бессточное') {
+          chips.push('<span class="cascade-chip static">Бессточное озеро</span>');
+        } else {
+          chips.push(`<span class="cascade-chip static">Сток → ${esc(outflow)}</span>`);
+        }
       }
       cascadeHtml =
         `<div class="section-block"><div class="section-label">Гидрологический каскад</div>` +
@@ -2208,6 +2213,30 @@
             `<table class="metrics-table"><thead><tr><th>Модель</th><th>RMSE</th><th>MAE</th><th>R²</th></tr></thead>` +
             `<tbody>${rows.join('')}</tbody></table></div>`;
         }
+      } else if (m.model_1_current_chlorophyll || m.model_2_forecast_10d) {
+        const rows = [];
+        const m1 = m.model_1_current_chlorophyll;
+        if (m1) {
+          rows.push(
+            `<tr><td>Модель 1: ${esc(m1.winner || 'Chl-a')} (БГУ)</td>` +
+            `<td>${fmtNum(m1.bsu_rmse_ug_l, 2)}</td><td>${fmtNum(m1.bsu_mae_ug_l, 2)}</td>` +
+            `<td>${fmtNum(m1.bsu_spearman_rho, 3)}</td></tr>`
+          );
+        }
+        const m2 = m.model_2_forecast_10d;
+        if (m2) {
+          rows.push(
+            `<tr><td>Модель 2: ${esc(m2.winner || 'Прогноз +10д')}</td>` +
+            `<td>${fmtNum(m2.test_rmse_ug_l, 2)}</td><td>${fmtNum(m2.test_mae_ug_l, 2)}</td>` +
+            `<td>${fmtNum(m2.test_spearman_rho, 3)}</td></tr>`
+          );
+        }
+        if (rows.length) {
+          modelTablesHtml +=
+            `<div class="section-block"><div class="section-label">Метрики моделей (Часть 2)</div>` +
+            `<table class="metrics-table"><thead><tr><th>Модель</th><th>RMSE</th><th>MAE</th><th>Spearman ρ</th></tr></thead>` +
+            `<tbody>${rows.join('')}</tbody></table></div>`;
+        }
       }
 
       let dqHtml = '';
@@ -2217,13 +2246,21 @@
         const metQ = dq.meteo_quality || {};
         const roster = dq.lakes_roster || {};
         const labG = dq.lab_and_gloria_summary || {};
+        const covByLake = dq.decadal_coverage_by_lake || {};
+        const rawObs = satQ.raw_observations_total != null ? satQ.raw_observations_total : satQ.raw_scenes_input;
+        let validDec = satQ.valid_decades_total;
+        if (validDec == null && Object.keys(covByLake).length) {
+          validDec = Object.values(covByLake).reduce((acc, st) => acc + Number((st && st.open_water_valid_decades) || 0), 0);
+        }
+        const gloriaPairs = labG.gloria_clean_pairs != null ? labG.gloria_clean_pairs : labG.gloria_total_clean_pairs;
+        const bsuRows = labG.bsu_lab_2018_2019_rows != null ? labG.bsu_lab_2018_2019_rows : labG.bsu_2018_2019_samples;
         const cards = [];
         if (roster.active_count != null) cards.push({ k: 'Активных озёр', v: String(roster.active_count) });
-        if (satQ.raw_observations_total != null) cards.push({ k: 'Наблюдений Sentinel-2', v: String(satQ.raw_observations_total) });
-        if (satQ.valid_decades_total != null) cards.push({ k: 'Чистых декад', v: String(satQ.valid_decades_total) });
+        if (rawObs != null) cards.push({ k: 'Сцен Sentinel-2', v: String(rawObs) });
+        if (validDec != null) cards.push({ k: 'Чистых декад', v: String(validDec) });
         if (metQ.total_daily_rows != null) cards.push({ k: 'Метео NASA POWER', v: `${metQ.total_daily_rows} сут (0% проп.)` });
-        if (labG.gloria_clean_pairs != null) cards.push({ k: 'Калибровка GLORIA', v: `${labG.gloria_clean_pairs} пар` });
-        if (labG.bsu_lab_2018_2019_rows != null) cards.push({ k: 'Пробы БГУ 2018–19', v: `${labG.bsu_lab_2018_2019_rows} шт.` });
+        if (gloriaPairs != null) cards.push({ k: 'Калибровка GLORIA', v: `${gloriaPairs} пар` });
+        if (bsuRows != null) cards.push({ k: 'Пробы БГУ 2018–19', v: `${bsuRows} шт.` });
         if (!cards.length) {
           for (const [k, v] of Object.entries(dq)) {
             if (typeof v === 'number' || typeof v === 'string') {

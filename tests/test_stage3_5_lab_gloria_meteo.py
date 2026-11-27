@@ -42,6 +42,9 @@ def test_gloria_sentinel2_pairs_valid() -> None:
         assert df[col].notna().all()
     assert df["ndci"].between(-1.0, 1.0).all()
     assert df["ndti"].between(-1.0, 1.0).all()
+    assert (df["b06_rededge2"].dropna() > 0.0).all()
+    assert (df["b08_nir"].dropna() > 0.0).all()
+    assert (df["secchi_depth_m"].dropna() > 0.0).all()
 
 
 def test_meteo_clean_complete_and_in_bounds() -> None:

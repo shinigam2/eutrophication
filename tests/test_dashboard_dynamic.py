@@ -49,8 +49,8 @@ def _lab_upload(body):
         chl = float(body.get("chl_a_lab_ug_l"))
     except (TypeError, ValueError):
         return 422, {"detail": "chl_a_lab_ug_l должен быть числом"}
-    if not 0 < chl <= 1000:
-        return 422, {"detail": "Хлорофилл-а вне диапазона 0–1000 мкг/л"}
+    if not 0 < chl <= 500:
+        return 422, {"detail": "Хлорофилл-а вне диапазона 0–500 мкг/л"}
     record = dict(water_body_id=wb, sample_date=sample.isoformat(), chl_a_lab_ug_l=chl,
                   secchi_depth_m=body.get("secchi_depth_m") or "",
                   total_phosphorus_ug_l=body.get("total_phosphorus_ug_l") or "",

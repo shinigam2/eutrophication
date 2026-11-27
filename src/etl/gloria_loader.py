@@ -199,6 +199,11 @@ def build_gloria_sentinel2_dataset(force_refresh: bool = False) -> Path:
     )
     df = df.loc[valid_mask].copy().reset_index(drop=True)
 
+    # Очищаем нефизичные отрицательные отражения в доп. каналах B06/B08 и нулевую прозрачность Секки
+    df.loc[df["b06_rededge2"] <= 0.0, "b06_rededge2"] = np.nan
+    df.loc[df["b08_nir"] <= 0.0, "b08_nir"] = np.nan
+    df.loc[df["Secchi_depth"] <= 0.0, "Secchi_depth"] = np.nan
+
     # Вычисляем точно те же оптические признаки, что и на реальных снимках Sentinel-2
     df["ndci"] = ((df["b05_rededge1"] - df["b04_red"]) / (df["b05_rededge1"] + df["b04_red"])).round(5)
     df["ndti"] = ((df["b04_red"] - df["b03_green"]) / (df["b04_red"] + df["b03_green"])).round(5)
@@ -208,9 +213,10 @@ def build_gloria_sentinel2_dataset(force_refresh: bool = False) -> Path:
     df["b06_b04_ratio"] = np.where(
         df["b06_rededge2"] > 0, (df["b06_rededge2"] / df["b04_red"]).round(4), np.nan
     )
-    # Базовая оценка Mishra & Mishra (2012) для прямого сравнения на GLORIA
+    # Базовая оценка Mishra & Mishra (2012) с монотонным ограничением в вершине параболы (-0.2216)
+    ndci_eff = np.maximum(df["ndci"], -86.115 / (2.0 * 194.325))
     df["chl_a_mishra_ug_l"] = np.maximum(
-        0.5, 14.039 + 86.115 * df["ndci"] + 194.325 * (df["ndci"] ** 2)
+        0.5, 14.039 + 86.115 * ndci_eff + 194.325 * (ndci_eff ** 2)
     ).round(3)
 
     # Приводим имена колонок к единому стилю snake_case

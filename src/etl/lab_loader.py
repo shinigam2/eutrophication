@@ -351,6 +351,18 @@ def validate_and_save_lab_data(
 
     if rebuild_from_pdfs or not LAB_CSV_PATH.exists():
         monthly_df = extract_bsu_monthly_tables(naroch_2018_exact_dates)
+        # Сохраняем пользовательские пробы, добавленные через веб-панель (POST /lab/upload)
+        if LAB_CSV_PATH.exists():
+            existing_df = pd.read_csv(LAB_CSV_PATH)
+            if "sample_type" in existing_df.columns:
+                extra = existing_df[existing_df["sample_type"].fillna("") != "integral_monthly_0.4um"]
+                if not extra.empty:
+                    monthly_df = (
+                        pd.concat([monthly_df, extra], ignore_index=True)
+                        .drop_duplicates(subset=["water_body_id", "sample_date"], keep="first")
+                        .sort_values(["water_body_id", "sample_date"])
+                        .reset_index(drop=True)
+                    )
         monthly_df.to_csv(LAB_CSV_PATH, index=False)
     else:
         monthly_df = pd.read_csv(LAB_CSV_PATH)
@@ -380,6 +392,17 @@ def validate_and_save_lab_data(
 
     if monthly_df.duplicated(subset=["water_body_id", "sample_date"]).any():
         raise ValueError("Обнаружены дубликаты (water_body_id, sample_date) в lab_measurements.csv!")
+
+    if "sample_type" not in monthly_df.columns:
+        monthly_df["sample_type"] = "web_upload"
+    else:
+        monthly_df["sample_type"] = monthly_df["sample_type"].fillna("web_upload")
+    if "date_precision" not in monthly_df.columns:
+        monthly_df["date_precision"] = "exact"
+    else:
+        monthly_df["date_precision"] = monthly_df["date_precision"].fillna("exact")
+    if "chl_a_filter_1_5_um_ug_l" not in monthly_df.columns:
+        monthly_df["chl_a_filter_1_5_um_ug_l"] = np.nan
 
     monthly_df.to_parquet(LAB_CLEAN_PARQUET_PATH, index=False)
 

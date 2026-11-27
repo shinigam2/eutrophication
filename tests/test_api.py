@@ -167,6 +167,15 @@ def test_api_real_repo_part3_connected():
             assert lakes["batorino"]["protected_area"] and lakes["batorino"]["chemical_treatment_allowed"] is False
             assert lakes["batorino"]["cascade_outflow_to"] == "myastro"
             assert lakes["batorino"]["attention_ug_l"] == 15.0 and lakes["batorino"]["bloom_ug_l"] == 25.0
+            met = c.get("/metrics").json()
+            dq = met["data_quality"]
+            assert dq["satellite_quality"]["raw_scenes_input"] > 0
+            assert dq["satellite_quality"]["valid_decades_total"] > 0
+            assert dq["lab_and_gloria_summary"]["gloria_total_clean_pairs"] > 5000
+            assert dq["lab_and_gloria_summary"]["bsu_2018_2019_samples"] == 36
+            from src.api import pipeline
+            assert pipeline.model_mae(app.state.c, "satellite") is not None
+            assert pipeline.model_mae(app.state.c, "lab") is not None
     finally:
         if old_root is None:
             os.environ.pop("PROJECT_ROOT", None)

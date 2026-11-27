@@ -193,14 +193,26 @@ def _walk_numbers(obj, path: Tuple[str, ...] = ()):
 
 
 def model_mae(c: dict, mode: str) -> Optional[float]:
-    """±MAE регрессии из model_metrics.json (структура произвольная — ищем по имени ключа)."""
-    hits = [(p, v) for p, v in _walk_numbers(c.get("metrics") or {}) if p and p[-1].lower() == "mae" and v > 0]
+    """±MAE регрессии из model_metrics.json (поддерживает и mae, и test_mae_ug_l / bsu_mae_ug_l Части 2)."""
+    mae_keys = {"mae", "test_mae_ug_l", "bsu_mae_ug_l", "mae_ug_l"}
+    hits = [
+        (p, v) for p, v in _walk_numbers(c.get("metrics") or {})
+        if p and p[-1].lower() in mae_keys and v > 0
+    ]
     if not hits:
         return None
-    mode_words = ("lab", "laboratory", "пробир") if mode == "lab" else ("sat", "space", "спутник")
+    mode_words = ("lab", "laboratory", "bsu", "model_1", "пробир") if mode == "lab" else ("sat", "space", "forecast", "model_2", "10d", "спутник")
     weighted = [h for h in hits if any(w in " ".join(h[0]).lower() for w in mode_words)]
-    chl_like = [h for h in (weighted or hits) if any(w in " ".join(h[0]).lower() for w in ("chl", "chlor", "10d", "regress"))]
-    return (chl_like or weighted or hits)[0][1]
+    # Предпочитаем итоговый показатель победителя (не baseline и не отдельные candidates)
+    winner_like = [
+        h for h in (weighted or hits)
+        if not any(skip in " ".join(h[0]).lower() for skip in ("baseline", "candidates"))
+    ]
+    chl_like = [
+        h for h in (winner_like or weighted or hits)
+        if any(w in " ".join(h[0]).lower() for w in ("chl", "chlor", "10d", "regress", "forecast", "test_mae"))
+    ]
+    return (chl_like or winner_like or weighted or hits)[0][1]
 
 
 def _base_sources(c: dict, mode: str, f: dict) -> List[str]:

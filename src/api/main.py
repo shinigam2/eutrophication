@@ -153,6 +153,7 @@ def lab_upload(req: LabUploadRequest, request: Request):
     record = dict(water_body_id=req.water_body_id, sample_date=req.sample_date.isoformat(),
                   chl_a_lab_ug_l=req.chl_a_lab_ug_l, secchi_depth_m=req.secchi_depth_m,
                   total_phosphorus_ug_l=req.total_phosphorus_ug_l, source_note=req.source_note)
+    csv_record = {**record, "sample_type": "web_upload", "date_precision": "exact"}
 
     with _upload_lock:
         if path.is_file() and path.stat().st_size > 0:
@@ -164,7 +165,7 @@ def lab_upload(req: LabUploadRequest, request: Request):
                   (pd.to_datetime(old["sample_date"]).dt.date == req.sample_date)
             if dup.any():
                 raise HTTPException(409, f"Проба {req.water_body_id} на {req.sample_date} уже есть в таблице")
-            row = pd.DataFrame([record]).reindex(columns=old.columns)
+            row = pd.DataFrame([csv_record]).reindex(columns=old.columns)
             row.to_csv(path, mode="a", header=False, index=False)
         else:
             pd.DataFrame([record], columns=LAB_COLUMNS).to_csv(path, index=False)

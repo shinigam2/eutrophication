@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-11-23T11:10:19Z",
+  "generated_at_utc": "2026-11-27T13:34:43Z",
   "date_range": {
     "start": "2018-04-01",
     "end": "2026-11-15"
@@ -62,10 +62,12 @@
   "satellite_quality": {
     "raw_scenes_input": 2224,
     "haze_b11_rejected": 42,
+    "dark_floor_rejected": 17,
     "bounds_rejected": 0,
-    "clean_unique_day_scenes": 2129,
+    "clean_unique_day_scenes": 2112,
     "glint_flagged_kept": 66,
-    "max_b11_haze_threshold": 0.06
+    "max_b11_haze_threshold": 0.06,
+    "valid_decades_total": 1140
   },
   "decadal_coverage_by_lake": {
     "naroch": {
@@ -102,10 +104,10 @@
       "total_valid_scenes": 299,
       "median_valid_water_pixels": 35198,
       "open_water_decades_total": 215,
-      "open_water_valid_decades": 148,
-      "open_water_valid_pct": 68.8,
+      "open_water_valid_decades": 147,
+      "open_water_valid_pct": 68.4,
       "open_water_interpolated_1step": 21,
-      "open_water_cloudy_missing": 46,
+      "open_water_cloudy_missing": 47,
       "ice_cover_decades": 96
     },
     "kuzmichi": {
@@ -122,30 +124,30 @@
       "total_valid_scenes": 284,
       "median_valid_water_pixels": 1038,
       "open_water_decades_total": 215,
-      "open_water_valid_decades": 145,
-      "open_water_valid_pct": 67.4,
-      "open_water_interpolated_1step": 25,
-      "open_water_cloudy_missing": 45,
+      "open_water_valid_decades": 143,
+      "open_water_valid_pct": 66.5,
+      "open_water_interpolated_1step": 26,
+      "open_water_cloudy_missing": 46,
       "ice_cover_decades": 96
     },
     "lotviny": {
       "total_valid_scenes": 288,
       "median_valid_water_pixels": 786,
       "open_water_decades_total": 215,
-      "open_water_valid_decades": 148,
-      "open_water_valid_pct": 68.8,
+      "open_water_valid_decades": 147,
+      "open_water_valid_pct": 68.4,
       "open_water_interpolated_1step": 22,
-      "open_water_cloudy_missing": 45,
+      "open_water_cloudy_missing": 46,
       "ice_cover_decades": 96
     },
     "rudakovo": {
       "total_valid_scenes": 247,
       "median_valid_water_pixels": 412,
       "open_water_decades_total": 215,
-      "open_water_valid_decades": 129,
-      "open_water_valid_pct": 60.0,
-      "open_water_interpolated_1step": 24,
-      "open_water_cloudy_missing": 62,
+      "open_water_valid_decades": 127,
+      "open_water_valid_pct": 59.1,
+      "open_water_interpolated_1step": 23,
+      "open_water_cloudy_missing": 65,
       "ice_cover_decades": 96
     }
   },
@@ -160,7 +162,7 @@
       "spearman_b04_b02_vs_lab_chl_a": 0.788,
       "spearman_b03_b02_vs_lab_chl_a": 0.733,
       "spearman_b04_b02_vs_secchi": -0.798,
-      "spearman_ndci_mishra_vs_lab_chl_a": -0.249,
+      "spearman_ndci_mishra_vs_lab_chl_a": -0.252,
       "mishra_mae_ug_l": 7.8
     }
   }

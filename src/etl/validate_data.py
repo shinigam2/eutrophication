@@ -51,9 +51,13 @@ QUALITY_REPORT_PATH = INTERIM_DIR / "data_quality_report.json"
 
 # Порог жёсткой отбраковки тонкой дымки/облаков по каналу B11 (1610 нм), пропущенных SCL
 MAX_B11_HAZE_THRESHOLD = 0.06
+# Отбраковка сбойных провалов Sen2Cor в нижний упор 1 DN (0.0001), ломающих отношения B04/B02 и NDCI
+MIN_VISIBLE_REFLECTANCE = 0.0005
+MIN_RED_REFLECTANCE = 0.0002
+MISHRA_VERTEX_NDCI = -86.115 / (2.0 * 194.325)  # ≈ -0.22157 (минимум параболы ~4.50 мкг/л)
 ICE_MONTHS = {12, 1, 2, 3}
 
-OPTICAL_MEDIAN_COLS = [
+BAND_MEDIAN_COLS = [
     "b02_blue",
     "b03_green",
     "b04_red",
@@ -61,6 +65,10 @@ OPTICAL_MEDIAN_COLS = [
     "b06_rededge2",
     "b08_nir",
     "b11_swir1",
+]
+
+OPTICAL_MEDIAN_COLS = [
+    *BAND_MEDIAN_COLS,
     "ndci",
     "ndti",
     "b03_b02_ratio",
@@ -87,11 +95,66 @@ def generate_decadal_dates(start_date: str, end_date: str) -> list[pd.Timestamp]
 
 
 def _compute_mishra(ndci: float) -> float:
-    return float(max(0.5, 14.039 + 86.115 * ndci + 194.325 * (ndci ** 2)))
+    """Монотонная оценка Mishra (2012): ограничиваем NDCI в вершине параболы (-0.2216)."""
+    ndci_eff = max(float(ndci), MISHRA_VERTEX_NDCI)
+    return float(max(0.5, 14.039 + 86.115 * ndci_eff + 194.325 * (ndci_eff ** 2)))
 
 
 def _compute_tsi(chl_a: float) -> float:
     return float(9.81 * math.log(max(chl_a, 0.01)) + 30.6)
+
+
+def _derive_optical_metrics(row: dict[str, Any]) -> None:
+    """Пересчитывает NDCI, NDTI, спектральные отношения, Chl-a и TSI согласованно из медианных каналов."""
+    b02 = row.get("b02_blue")
+    b03 = row.get("b03_green")
+    b04 = row.get("b04_red")
+    b05 = row.get("b05_rededge1")
+
+    if pd.notna(b05) and pd.notna(b04) and float(b05) > 0 and float(b04) > 0:
+        ndci = (float(b05) - float(b04)) / (float(b05) + float(b04))
+        row["ndci"] = round(ndci, 5)
+        chl = _compute_mishra(ndci)
+        row["chl_a_est_ug_l"] = round(chl, 3)
+        row["tsi_est"] = round(_compute_tsi(chl), 2)
+    else:
+        row["ndci"] = np.nan
+        row["chl_a_est_ug_l"] = np.nan
+        row["tsi_est"] = np.nan
+
+    if pd.notna(b04) and pd.notna(b03) and float(b04) > 0 and float(b03) > 0:
+        row["ndti"] = round((float(b04) - float(b03)) / (float(b04) + float(b03)), 5)
+    else:
+        row["ndti"] = np.nan
+
+    row["b03_b02_ratio"] = (
+        round(float(b03) / float(b02), 4)
+        if (pd.notna(b02) and pd.notna(b03) and float(b02) > 1e-5 and float(b03) > 0)
+        else np.nan
+    )
+    row["b04_b02_ratio"] = (
+        round(float(b04) / float(b02), 4)
+        if (pd.notna(b02) and pd.notna(b04) and float(b02) > 1e-5 and float(b04) > 0)
+        else np.nan
+    )
+    row["b05_b04_ratio"] = (
+        round(float(b05) / float(b04), 4)
+        if (pd.notna(b04) and pd.notna(b05) and float(b04) > 1e-5 and float(b05) > 0)
+        else np.nan
+    )
+
+
+def _dark_artifact_mask(df: pd.DataFrame) -> pd.Series:
+    return (
+        df["b02_blue"].isna()
+        | (df["b02_blue"] < MIN_VISIBLE_REFLECTANCE)
+        | df["b03_green"].isna()
+        | (df["b03_green"] < MIN_VISIBLE_REFLECTANCE)
+        | df["b04_red"].isna()
+        | (df["b04_red"] < MIN_RED_REFLECTANCE)
+        | df["b05_rededge1"].isna()
+        | (df["b05_rededge1"] < MIN_RED_REFLECTANCE)
+    )
 
 
 def aggregate_to_decadal_grid(
@@ -105,16 +168,19 @@ def aggregate_to_decadal_grid(
     df = scenes_df.copy()
     df = df[df["water_body_id"].isin(active_lake_ids)].copy()
 
-    # Проверка физических границ и отсечение экстремальной дымки/облаков по B11 > 0.06
+    # Проверка физических границ, отсечение дымки (B11 > 0.06) и провалов Sen2Cor в 1 DN (<= 0.0001)
     haze_mask = df["b11_swir1"].notna() & (df["b11_swir1"] > MAX_B11_HAZE_THRESHOLD)
     haze_rejected = int(haze_mask.sum())
+    dark_mask = ~haze_mask & _dark_artifact_mask(df)
+    dark_rejected = int(dark_mask.sum())
     bounds_mask = (
         df["ndci"].between(-1.0, 1.0)
         & df["ndti"].between(-1.0, 1.0)
         & (df["valid_water_pixels"] >= 20)
         & ~haze_mask
+        & ~dark_mask
     )
-    bounds_rejected = int((~bounds_mask & ~haze_mask).sum())
+    bounds_rejected = int((~bounds_mask & ~haze_mask & ~dark_mask).sum())
     df = df[bounds_mask].copy()
 
     # Дедупликация в пределах одной даты и озера (берём сцену с наибольшим числом пикселей и меньшим B11)
@@ -197,9 +263,10 @@ def aggregate_to_decadal_grid(
                 "last_scene_id": str(last_row["scene_id"]),
                 "last_scene_date": str(last_row["scene_date"]),
             }
-            for c in OPTICAL_MEDIAN_COLS:
+            for c in BAND_MEDIAN_COLS:
                 val = used_df[c].median()
                 row[c] = float(round(val, 6)) if pd.notna(val) else np.nan
+            _derive_optical_metrics(row)
             lake_rows.append(row)
 
         # Одношаговая интерполяция ТОЛЬКО одиночного облачного пропуска между двумя valid декадами одного года
@@ -214,14 +281,11 @@ def aggregate_to_decadal_grid(
                 and cur["date"][:4] == prev_r["date"][:4] == next_r["date"][:4]
             ):
                 cur["obs_status"] = "interpolated_1step"
-                for c in OPTICAL_MEDIAN_COLS:
+                for c in BAND_MEDIAN_COLS:
                     if pd.notna(prev_r[c]) and pd.notna(next_r[c]):
                         cur[c] = round(0.5 * (float(prev_r[c]) + float(next_r[c])), 6)
-                # Пересчитываем chl_a_est и tsi_est согласованно из интерполированного NDCI
-                if pd.notna(cur["ndci"]):
-                    chl = _compute_mishra(float(cur["ndci"]))
-                    cur["chl_a_est_ug_l"] = round(chl, 3)
-                    cur["tsi_est"] = round(_compute_tsi(chl), 2)
+                # Пересчитываем все индексы, отношения, Chl-a и TSI согласованно из интерполированных каналов
+                _derive_optical_metrics(cur)
 
         all_rows.extend(lake_rows)
 
@@ -229,6 +293,7 @@ def aggregate_to_decadal_grid(
     qc_stats = {
         "raw_scenes_input": raw_count,
         "haze_b11_rejected": haze_rejected,
+        "dark_floor_rejected": dark_rejected,
         "bounds_rejected": bounds_rejected,
         "clean_unique_day_scenes": int(len(df)),
         "glint_flagged_kept": int(df["sun_glint_flag"].sum()),
@@ -243,6 +308,7 @@ def evaluate_bsu_2018_2019_matchup(
     """Честная контрольная сверка 2018–2019 гг.: реальные сцены Sentinel-2 vs пробы БГУ (±10 дн)."""
     s2 = scenes_df[~scenes_df["sun_glint_flag"]].copy()
     s2 = s2[s2["b11_swir1"].isna() | (s2["b11_swir1"] <= MAX_B11_HAZE_THRESHOLD)]
+    s2 = s2[~_dark_artifact_mask(s2)].copy()
     s2["dt"] = pd.to_datetime(s2["scene_date"])
 
     lab = lab_df.copy()
@@ -255,22 +321,30 @@ def evaluate_bsu_2018_2019_matchup(
             & ((s2["dt"] - r["dt"]).abs() <= pd.Timedelta(days=10))
         ]
         if len(sub) > 0:
+            ndci_med = float(sub["ndci"].median())
+            secchi_val = float(r["secchi_depth_m"]) if pd.notna(r.get("secchi_depth_m")) else np.nan
             matched.append(
                 {
                     "lake": r["water_body_id"],
                     "chl_lab": float(r["chl_a_lab_ug_l"]),
-                    "secchi": float(r["secchi_depth_m"]),
+                    "secchi": secchi_val,
                     "b04_b02": float(sub["b04_b02_ratio"].median()),
                     "b03_b02": float(sub["b03_b02_ratio"].median()),
                     "ndti": float(sub["ndti"].median()),
-                    "ndci": float(sub["ndci"].median()),
-                    "chl_mishra": float(sub["chl_a_est_ug_l"].median()),
+                    "ndci": ndci_med,
+                    "chl_mishra": round(_compute_mishra(ndci_med), 3),
                 }
             )
     if not matched:
         return {"matched_samples": 0, "total_lab_samples": len(lab)}
 
     mdf = pd.DataFrame(matched)
+    secchi_sub = mdf.dropna(subset=["secchi"])
+    secchi_rho = (
+        round(float(secchi_sub["secchi"].rank().corr(secchi_sub["b04_b02"].rank())), 3)
+        if len(secchi_sub) >= 3
+        else None
+    )
     return {
         "matched_samples": int(len(mdf)),
         "total_lab_samples": int(len(lab)),
@@ -281,9 +355,7 @@ def evaluate_bsu_2018_2019_matchup(
         "spearman_b03_b02_vs_lab_chl_a": round(
             float(mdf["chl_lab"].rank().corr(mdf["b03_b02"].rank())), 3
         ),
-        "spearman_b04_b02_vs_secchi": round(
-            float(mdf["secchi"].rank().corr(mdf["b04_b02"].rank())), 3
-        ),
+        "spearman_b04_b02_vs_secchi": secchi_rho,
         "spearman_ndci_mishra_vs_lab_chl_a": round(
             float(mdf["chl_lab"].rank().corr(mdf["chl_mishra"].rank())), 3
         ),
@@ -335,6 +407,9 @@ def run_validation() -> tuple[Path, Path]:
             "ice_cover_decades": int((sub_all["obs_status"] == "ice_cover").sum()),
         }
 
+    sat_qc["valid_decades_total"] = int(
+        sum(st["open_water_valid_decades"] for st in per_lake_report.values())
+    )
     bsu_matchup = evaluate_bsu_2018_2019_matchup(scenes_df, lab_df)
 
     report = {
