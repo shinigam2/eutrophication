@@ -381,10 +381,11 @@ class RealDataProvider:
                 return None
         i = min(range(len(dates)), key=lambda k: abs((dates[k] - d).days))
         row = g.iloc[i]
+        prev_frame = g.iloc[[i - 1]] if (i > 0 and 0 < (dates[i] - dates[i - 1]).days <= 12) else None
         meta = self.row_meta(row)
         meta.update(date_used=meta["date"],
                     _wb=wb_id, _doy=meta["date"].timetuple().tm_yday, _mode=self.mode,
-                    _frame=g.iloc[[i]])
+                    _frame=g.iloc[[i]], _prev_frame=prev_frame)
         return meta
 
     def history_frame(self, wb_id: str, end: date, limit: int = 120) -> pd.DataFrame:
@@ -456,6 +457,138 @@ class RealPredictor:
         return [(round(max(float(c), 0.0), 2), round(min(max(float(p), 0.0), 1.0), 3),
                  None if att is None else round(min(max(float(a), 0.0), 1.0), 3))
                 for c, p, a in zip(chl, proba[:, idx], att if att is not None else [None] * len(chl))]
+
+
+class TwoStageModelPredictor:
+    """Адаптер к двухэтапным моделям Части 2 (regressor.joblib + forecaster.joblib):
+    Модель 1 (GLORIA Ridge) оценивает текущий Chl-a по оптическим каналам Sentinel-2,
+    Модель 2 (RandomForest) прогнозирует Chl-a через +10 дней и P(>=15) / P(>=25) через norm.sf.
+    """
+
+    ATTENTION_THRESHOLD = 15.0
+    BLOOM_THRESHOLD = 25.0
+
+    def __init__(self, reg_path: Path, fc_path: Path):
+        reg_art = joblib.load(reg_path)
+        fc_art = joblib.load(fc_path)
+        if not isinstance(reg_art, dict) or "model" not in reg_art:
+            raise IntegrationError(f"{Path(reg_path).name}: ожидался словарь артефакта Модели 1 с ключом 'model'")
+        if not isinstance(fc_art, dict) or not {"model", "feature_cols", "log_residual_std"} <= set(fc_art):
+            raise IntegrationError(
+                f"{Path(fc_path).name}: ожидался словарь артефакта Модели 2 "
+                "с ключами 'model', 'feature_cols', 'log_residual_std'"
+            )
+        self.reg_model = reg_art["model"]
+        self.reg_cols = list(reg_art.get("feature_cols") or [])
+        self.fc_model = fc_art["model"]
+        self.fc_cols = list(fc_art["feature_cols"])
+        self.log_std = max(float(fc_art["log_residual_std"]), 1e-6)
+        self.test_mae = _num(fc_art.get("test_mae_ug_l"))
+        reg_name = reg_art.get("model_name") or type(self.reg_model).__name__
+        fc_name = fc_art.get("model_name") or type(self.fc_model).__name__
+        self.names = (f"{Path(reg_path).name} ({reg_name})", f"{Path(fc_path).name} ({fc_name})")
+
+    def estimate_current_many(self, frame: pd.DataFrame):
+        """Векторная оценка текущего Chl-a Моделью 1 на наборе строк с оптическими каналами."""
+        import numpy as np
+        from src.models.features import build_optical_features
+
+        if frame.empty:
+            return np.array([], dtype=float)
+        missing_bands = [c for c in ("b02_blue", "b03_green", "b04_red") if c not in frame.columns]
+        if missing_bands:
+            raise IntegrationError(f"Модели 1 нужны оптические каналы, которых нет в витрине: {missing_bands}")
+        X_opt = build_optical_features(frame, prefix="", subtract_glint=True)
+        if self.reg_cols:
+            X_opt = X_opt[self.reg_cols]
+        pred_log = self.reg_model.predict(X_opt)
+        return np.clip(np.expm1(pred_log), 0.1, None)
+
+    def estimate_current(self, f: dict) -> float:
+        """Оценка текущего Chl-a Моделью 1 для одной строки признаков."""
+        frame = f.get("_frame")
+        if frame is None:
+            frame = f.get("_opt_frame")
+        if frame is None or frame.empty:
+            raise IntegrationError("Нет строки с оптическими каналами для Модели 1")
+        return float(self.estimate_current_many(frame)[0])
+
+    def _probs_from_log(self, pred_log):
+        import numpy as np
+        from scipy.stats import norm
+
+        att = norm.sf(np.log1p(self.ATTENTION_THRESHOLD), loc=pred_log, scale=self.log_std)
+        bloom = norm.sf(np.log1p(self.BLOOM_THRESHOLD), loc=pred_log, scale=self.log_std)
+        return bloom, att
+
+    def predict(self, f: dict) -> Tuple[float, float, Optional[float]]:
+        import numpy as np
+
+        frame = f["_frame"].copy()
+        chl_curr = float(self.estimate_current_many(frame)[0])
+        prev_frame = f.get("_prev_frame")
+        if prev_frame is not None and not prev_frame.empty:
+            chl_lag = float(self.estimate_current_many(prev_frame)[0])
+            chl_delta = chl_curr - chl_lag
+        else:
+            chl_lag = np.nan
+            chl_delta = np.nan
+
+        frame["chl_a_current_ug_l"] = chl_curr
+        frame["chl_a_lag10d"] = chl_lag
+        frame["chl_a_delta_10d"] = chl_delta
+        missing = [c for c in self.fc_cols if c not in frame.columns]
+        if missing:
+            raise IntegrationError(f"Модели 2 нужны признаки, которых нет в витрине: {missing}")
+
+        pred_log = float(self.fc_model.predict(frame[self.fc_cols])[0])
+        chl_pred = float(np.clip(np.expm1(pred_log), 0.1, None))
+        bloom_p, att_p = self._probs_from_log(pred_log)
+        return (
+            round(chl_pred, 2),
+            round(min(max(float(bloom_p), 0.0), 1.0), 3),
+            round(min(max(float(att_p), 0.0), 1.0), 3),
+        )
+
+    def predict_many(self, frame: pd.DataFrame) -> List[Tuple[float, float, Optional[float]]]:
+        """Векторный двухэтапный прогноз (Модель 1 -> лаг <=12 дн. -> Модель 2) за один вызов."""
+        import numpy as np
+
+        if frame.empty:
+            return []
+        work = frame.copy().reset_index(drop=True)
+        chl_curr = self.estimate_current_many(work)
+        work["chl_a_current_ug_l"] = chl_curr
+
+        if "date" in work.columns:
+            dts = pd.to_datetime(work["date"])
+            if "water_body_id" in work.columns:
+                prev_dt = dts.groupby(work["water_body_id"]).shift(1)
+                prev_chl = work.groupby("water_body_id")["chl_a_current_ug_l"].shift(1)
+            else:
+                prev_dt = dts.shift(1)
+                prev_chl = work["chl_a_current_ug_l"].shift(1)
+            prev_ok = (dts - prev_dt).dt.days.between(1, 12)
+            work["chl_a_lag10d"] = prev_chl.where(prev_ok, np.nan)
+        else:
+            work["chl_a_lag10d"] = np.nan
+        work["chl_a_delta_10d"] = work["chl_a_current_ug_l"] - work["chl_a_lag10d"]
+
+        missing = [c for c in self.fc_cols if c not in work.columns]
+        if missing:
+            raise IntegrationError(f"Модели 2 нужны признаки, которых нет в витрине: {missing}")
+
+        pred_log = self.fc_model.predict(work[self.fc_cols])
+        chl_pred = np.clip(np.expm1(pred_log), 0.1, None)
+        bloom_p, att_p = self._probs_from_log(pred_log)
+        return [
+            (
+                round(float(c), 2),
+                round(min(max(float(bp), 0.0), 1.0), 3),
+                round(min(max(float(ap), 0.0), 1.0), 3),
+            )
+            for c, bp, ap in zip(chl_pred, bloom_p, att_p)
+        ]
 
 
 # ------------------------------------------------------------------ Часть 3

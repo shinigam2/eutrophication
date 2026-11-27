@@ -176,6 +176,9 @@ def lab_upload(req: LabUploadRequest, request: Request):
         f = prov.get_features(req.water_body_id, req.sample_date)
         if f and f.get("chl_a_current") is not None:
             chl = f["chl_a_current"]
+            sat_pred = c["predictors"]["satellite"]["predictor"]
+            if isinstance(sat_pred, adapters.TwoStageModelPredictor) and "_frame" in f:
+                chl = round(sat_pred.estimate_current(f), 2)
             comparison = dict(satellite_date=f["date_used"].isoformat(), satellite_chl_a_ug_l=chl,
                               difference_ug_l=round(req.chl_a_lab_ug_l - chl, 2),
                               note="Спутник видит верхний слой воды; проба — интегральная. Расхождение ожидаемо.")

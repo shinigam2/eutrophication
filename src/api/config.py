@@ -32,6 +32,9 @@ MODEL_FILES = {
     "satellite": ("lgb_regressor_chla.joblib", "lgb_classifier_bloom.joblib"),
     "lab": ("lgb_regressor_chla_lab.joblib", "lgb_classifier_bloom_lab.joblib"),
 }
+TWO_STAGE_MODEL_FILES = {
+    "satellite": ("regressor.joblib", "forecaster.joblib"),
+}
 MODEL_ENV = {
     "satellite": ("WATER_REG_MODEL", "WATER_CLF_MODEL", "WATER_MODELS_DIR"),
     "lab": ("WATER_REG_MODEL_LAB", "WATER_CLF_MODEL_LAB", "WATER_MODELS_LAB_DIR"),
@@ -131,6 +134,23 @@ def find_models(mode: str = "satellite"):
         r, c = d / reg_name, d / clf_name
         if r.is_file() and c.is_file():
             return r, c
+    return None
+
+
+def find_two_stage_models(mode: str = "satellite"):
+    """Возвращает (regressor.joblib, forecaster.joblib) двухэтапной Части 2 или None."""
+    pair = TWO_STAGE_MODEL_FILES.get(mode)
+    if not pair:
+        return None
+    env_reg, env_clf, env_dir = MODEL_ENV[mode]
+    if os.environ.get(env_reg) or os.environ.get(env_clf):
+        return None
+    base = os.environ.get(env_dir)
+    dirs = [Path(base)] if base else [root() / d for d in MODEL_DIRS]
+    for d in dirs:
+        r, f = d / pair[0], d / pair[1]
+        if r.is_file() and f.is_file():
+            return r, f
     return None
 
 

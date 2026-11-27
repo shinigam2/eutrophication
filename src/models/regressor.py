@@ -2,13 +2,18 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from lightgbm import LGBMRegressor
 from scipy.stats import spearmanr
+from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+
+try:
+    from lightgbm import LGBMRegressor
+except ImportError:
+    LGBMRegressor = None
 
 try:
     from src.models.features import OPTICAL_FEATURE_COLS, build_optical_features
@@ -34,7 +39,7 @@ def main() -> None:
     X_train = build_optical_features(gloria, prefix="", subtract_glint=False)
     y_train_log = np.log1p(gloria["chl_a_ug_l"].to_numpy())
 
-    # 2. Независимый экзамен на 36 реальных пробах БГУ (с вычитанием блика 0.8 * B11)
+    # 2. Независимый экзамен на 36 реальных пробах БГУ (с вычитанием блика)
     lab = pd.read_parquet(ROOT_DIR / "data/processed/features_lab.parquet")
     X_test = build_optical_features(lab, prefix="s2_", subtract_glint=True)
     y_test = lab["chl_a_lab_ug_l"].to_numpy()
@@ -58,7 +63,9 @@ def main() -> None:
             ("scaler", StandardScaler()),
             ("model", Ridge(alpha=1.0)),
         ]),
-        "LightGBM": LGBMRegressor(
+    }
+    if LGBMRegressor is not None:
+        models["LightGBM"] = LGBMRegressor(
             n_estimators=200,
             learning_rate=0.03,
             max_depth=4,
@@ -66,8 +73,15 @@ def main() -> None:
             min_child_samples=20,
             random_state=42,
             verbose=-1,
-        ),
-    }
+        )
+    else:
+        models["HistGB"] = HistGradientBoostingRegressor(
+            max_iter=200,
+            learning_rate=0.03,
+            max_depth=4,
+            min_samples_leaf=20,
+            random_state=42,
+        )
 
     best_name = None
     best_mae = float("inf")

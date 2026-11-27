@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import date as Date, datetime, timezone
 from pathlib import Path
 import joblib
 import numpy as np
@@ -14,6 +14,7 @@ except ImportError:
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SAVED_MODELS_DIR = Path(__file__).resolve().parent / "saved_models"
 DATASET_PATH = ROOT_DIR / "data/processed/features_forecast_10d.parquet"
+SATELLITE_PATH = ROOT_DIR / "data/processed/features_satellite.parquet"
 RESULT_PATH = ROOT_DIR / "data/processed/result.json"
 
 ATTENTION_THRESHOLD_UG_L = 15.0
@@ -42,33 +43,81 @@ def _next_decade_date(base_date_str: str) -> str:
     return next_dt.strftime("%Y-%m-%d")
 
 
-def predict_lake(lake_id: str, date: str | None = None) -> dict:
+def _load_dataset(reg_artifact: dict) -> pd.DataFrame:
+    """Читает features_forecast_10d.parquet (или собирает нужные лаги на лету из features_satellite.parquet)."""
+    if DATASET_PATH.is_file():
+        df = pd.read_parquet(DATASET_PATH)
+    else:
+        df = pd.read_parquet(SATELLITE_PATH)
+        df = df.copy()
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values(["water_body_id", "date"]).reset_index(drop=True)
+        X_opt = build_optical_features(df, prefix="", subtract_glint=True)
+        df["chl_a_current_ug_l"] = np.clip(np.expm1(reg_artifact["model"].predict(X_opt)), 0.1, None)
+        prev_date = df.groupby("water_body_id")["date"].shift(1)
+        prev_ok = (df["date"] - prev_date).dt.days <= 12
+        df["chl_a_lag10d"] = df.groupby("water_body_id")["chl_a_current_ug_l"].shift(1).where(prev_ok, np.nan)
+        df["chl_a_delta_10d"] = df["chl_a_current_ug_l"] - df["chl_a_lag10d"]
+    return df
+
+
+def _select_lake_row(lake_df: pd.DataFrame, lake_id: str, date_str: str | None) -> pd.DataFrame:
+    """Выбирает строку по точной ISO-дате YYYY-MM-DD (или ближайшей декаде в пределах <= 10 дней)."""
+    if date_str is None:
+        return lake_df.iloc[[-1]].copy()
+    try:
+        req = Date.fromisoformat(str(date_str).strip())
+    except ValueError as exc:
+        raise ValueError(f"Укажите полную дату в формате YYYY-MM-DD (получено: {date_str!r})") from exc
+
+    dts = pd.to_datetime(lake_df["date"]).dt.date
+    exact = lake_df[dts == req]
+    if not exact.empty:
+        return exact.iloc[[-1]].copy()
+
+    diffs = dts.map(lambda d: abs((d - req).days))
+    best_idx = int(diffs.idxmin())
+    if int(diffs.loc[best_idx]) <= 10:
+        return lake_df.loc[[best_idx]].copy()
+    raise ValueError(
+        f"Для озера '{lake_id}' нет данных на дату {req} (ближайшая декада: {dts.loc[best_idx]})"
+    )
+
+
+def predict_lake(
+    lake_id: str,
+    date: str | None = None,
+    *,
+    reg_artifact: dict | None = None,
+    fc_artifact: dict | None = None,
+    df: pd.DataFrame | None = None,
+) -> dict:
     """
     Вызывает Модель 1 (сейчас) и Модель 2 (прогноз +10 дней) для указанного озера.
     Возвращает словарь строго по общему контракту result.json.
     """
-    reg_artifact = joblib.load(SAVED_MODELS_DIR / "regressor.joblib")
-    fc_artifact = joblib.load(SAVED_MODELS_DIR / "forecaster.joblib")
+    if reg_artifact is None:
+        reg_artifact = joblib.load(SAVED_MODELS_DIR / "regressor.joblib")
+    if fc_artifact is None:
+        fc_artifact = joblib.load(SAVED_MODELS_DIR / "forecaster.joblib")
+    if df is None:
+        df = _load_dataset(reg_artifact)
 
-    df = pd.read_parquet(DATASET_PATH)
     lake_df = df[df["water_body_id"] == lake_id].sort_values("date").copy()
 
     if lake_df.empty:
         available = sorted(df["water_body_id"].unique().tolist())
         raise ValueError(f"Озеро '{lake_id}' не найдено. Доступные: {available}")
 
-    if date is not None:
-        row_df = lake_df[lake_df["date"].astype(str).str.startswith(date)]
-        if row_df.empty:
-            raise ValueError(f"Для озера '{lake_id}' нет данных за дату {date}")
-        row_df = row_df.iloc[[-1]].copy()
-    else:
-        row_df = lake_df.iloc[[-1]].copy()
+    row_df = _select_lake_row(lake_df, lake_id, date)
 
-    # 1. Вызов Модели 1: оценка текущей концентрации хлорофилла-а (мкг/л)
+    # 1. Вызов Модели 1: оценка текущей концентрации хлорофилла-а (мкг/л) + согласованная дельта
     X_opt = build_optical_features(row_df, prefix="", subtract_glint=True)
     chl_current = float(np.clip(np.expm1(reg_artifact["model"].predict(X_opt)[0]), 0.1, None))
     row_df["chl_a_current_ug_l"] = chl_current
+    if "chl_a_lag10d" in row_df.columns:
+        lag_val = row_df["chl_a_lag10d"].iloc[0]
+        row_df["chl_a_delta_10d"] = chl_current - float(lag_val) if pd.notna(lag_val) else np.nan
 
     # 2. Вызов Модели 2: прогноз концентрации на следующую декаду
     X_fc = row_df[fc_artifact["feature_cols"]]
@@ -111,7 +160,9 @@ def predict_lake(lake_id: str, date: str | None = None) -> dict:
 
 def save_predictions_to_json(lake_ids: list[str] | None = None) -> dict:
     """Считает прогноз по выбранным озёрам (или всем), печатает в консоль и пишет result.json."""
-    df = pd.read_parquet(DATASET_PATH)
+    reg_artifact = joblib.load(SAVED_MODELS_DIR / "regressor.joblib")
+    fc_artifact = joblib.load(SAVED_MODELS_DIR / "forecaster.joblib")
+    df = _load_dataset(reg_artifact)
     if lake_ids is None:
         lake_ids = sorted(df["water_body_id"].unique().tolist())
 
@@ -124,7 +175,7 @@ def save_predictions_to_json(lake_ids: list[str] | None = None) -> dict:
     print("-" * 97)
 
     for lid in lake_ids:
-        res = predict_lake(lid)
+        res = predict_lake(lid, reg_artifact=reg_artifact, fc_artifact=fc_artifact, df=df)
         results[lid] = res
         corridor = f"{res['chl_a_pred_ug_l']:.2f} ({res['chl_a_pred_low_ug_l']:.1f}..{res['chl_a_pred_high_ug_l']:.1f})"
         print(

@@ -39,8 +39,12 @@ def build_optical_features(
 
     if subtract_glint:
         b11 = _get_band_series(df, "b11_swir1", prefix=prefix).fillna(0.0).clip(lower=0.0)
+        # Ограничиваем вычитаемый блик половиной минимального видимого канала,
+        # чтобы на тёмных малых озёрах B02/B04 не проваливались в упор 0.001
+        min_vis = out[list(VISIBLE_BANDS)].min(axis=1).clip(lower=0.0)
+        glint = np.minimum(0.8 * b11, 0.5 * min_vis)
         for band in VISIBLE_BANDS:
-            out[band] = (out[band] - 0.8 * b11).clip(lower=0.001)
+            out[band] = (out[band] - glint).clip(lower=0.001)
     else:
         for band in VISIBLE_BANDS:
             out[band] = out[band].clip(lower=0.001)

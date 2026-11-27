@@ -24,7 +24,7 @@ def main() -> int:
                      ("онтология", config.find_ontology())):
         print(f"  {label:20} {p or '— не найден'}")
     for mode in config.MODES:
-        models = config.find_models(mode)
+        models = config.find_models(mode) or config.find_two_stage_models(mode)
         print(f"  {('модели ' + mode):20} {models[0].parent if models else '— не найдены'}\n")
 
     try:

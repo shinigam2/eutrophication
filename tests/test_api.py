@@ -152,21 +152,56 @@ def test_registry_filtering_and_geojson_hydration(tmp_path):
 
 
 def test_api_real_repo_part3_connected():
-    """На реальном корне репозитория FastAPI подключает Части 1 и 3 (graph_cli + graph.ttl)."""
+    """На реальном корне репозитория FastAPI подключает ВСЕ 3 реальные части (Часть 1, Часть 2 и Часть 3)."""
+    import json
     from pathlib import Path
     repo_root = Path(__file__).resolve().parents[1]
+    res_json = json.loads((repo_root / "data/processed/result.json").read_text(encoding="utf-8"))
     old_root = os.environ.get("PROJECT_ROOT")
     try:
         os.environ["PROJECT_ROOT"] = str(repo_root)
         with TestClient(app) as c:
             root_info = c.get("/").json()
             assert root_info["components"]["part1"].startswith("реальная:")
+            assert root_info["components"]["part2"].startswith("реальная: regressor.joblib")
             assert root_info["components"]["part3"].startswith("реальная: src.knowledge_graph.graph_cli")
+            assert root_info["modes"]["satellite"]["available"] is True
+
             lakes = {w["id"]: w for w in c.get("/lakes").json()}
             assert {"naroch", "myastro", "batorino"} <= set(lakes)
             assert lakes["batorino"]["protected_area"] and lakes["batorino"]["chemical_treatment_allowed"] is False
             assert lakes["batorino"]["cascade_outflow_to"] == "myastro"
             assert lakes["batorino"]["attention_ug_l"] == 15.0 and lakes["batorino"]["bloom_ug_l"] == 25.0
+
+            # Полное совпадение /predict, /history и /timeline с result.json Части 2
+            for lid in ("naroch", "batorino", "rudakovo"):
+                rec = res_json["predictions"][lid]
+                pr = c.get(f"/predict/{lid}", params={"date": rec["base_date"]}).json()
+                assert pr["chl_a_current"] == rec["chl_a_current_ug_l"]
+                assert pr["chl_a_forecast"] == rec["chl_a_pred_ug_l"]
+                assert pr["attention_probability"] == rec["attention_prob"]
+                assert pr["bloom_probability"] == rec["bloom_prob"]
+                assert pr["alert_level"] in ("GREEN", "RED")
+                assert pr["pred_low_ug_l"] is not None and pr["pred_high_ug_l"] is not None
+                assert any("graph_cli" in s for s in pr["sources"])
+                assert any("альгицид" in r.lower() for r in pr["recommendations"])
+
+            hist = c.get("/history/batorino", params={"date": "2026-11-11", "limit": 24}).json()
+            pt_last = next(p for p in hist["points"] if p["date"] == "2026-11-11")
+            assert pt_last["observed"] == res_json["predictions"]["batorino"]["chl_a_current_ug_l"]
+            assert pt_last["forecast"] == res_json["predictions"]["batorino"]["chl_a_pred_ug_l"]
+
+            tl = c.get("/timeline", params={"mode": "satellite"}).json()
+            assert tl["has_forecast"] is True
+            snap_bat = tl["snapshots"]["2026-11-11"]["batorino"]
+            assert snap_bat["c"] == res_json["predictions"]["batorino"]["chl_a_current_ug_l"]
+            assert snap_bat["f"] == res_json["predictions"]["batorino"]["chl_a_pred_ug_l"]
+            assert snap_bat["a"] in ("GREEN", "RED")
+
+            # Зима: наблюдения нет — прогноз не строится
+            ice = c.get("/predict/naroch", params={"date": "2025-01-11"}).json()
+            assert ice["obs_status"] == "ice_cover" and ice["chl_a_forecast"] is None and ice["alert_level"] is None
+
             met = c.get("/metrics").json()
             dq = met["data_quality"]
             assert dq["satellite_quality"]["raw_scenes_input"] > 0
@@ -174,8 +209,8 @@ def test_api_real_repo_part3_connected():
             assert dq["lab_and_gloria_summary"]["gloria_total_clean_pairs"] > 5000
             assert dq["lab_and_gloria_summary"]["bsu_2018_2019_samples"] == 36
             from src.api import pipeline
-            assert pipeline.model_mae(app.state.c, "satellite") is not None
-            assert pipeline.model_mae(app.state.c, "lab") is not None
+            assert pipeline.model_mae(app.state.c, "satellite") == met["model_2_forecast_10d"]["test_mae_ug_l"]
+            assert pipeline.model_mae(app.state.c, "lab") == met["model_1_current_chlorophyll"]["bsu_mae_ug_l"]
     finally:
         if old_root is None:
             os.environ.pop("PROJECT_ROOT", None)

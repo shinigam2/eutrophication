@@ -78,13 +78,18 @@ def _load_part1():
 
 
 def _load_predictors() -> Dict[str, dict]:
-    """Модели Части 2 по режимам (режим без моделей просто не попадает в словарь)."""
+    """Модели Части 2 по режимам (классические lgb_*.joblib или двухэтапные regressor.joblib + forecaster.joblib)."""
     out: Dict[str, dict] = {}
     for mode in MODES:
         models = config.find_models(mode)
         if models:
             out[mode] = dict(predictor=adapters.RealPredictor(*models, config.find_attention_model(mode)),
                              names=tuple(p.name for p in models), real=True)
+            continue
+        two_stage = config.find_two_stage_models(mode)
+        if two_stage:
+            pred = adapters.TwoStageModelPredictor(*two_stage)
+            out[mode] = dict(predictor=pred, names=pred.names, real=True)
     return out
 
 
@@ -293,6 +298,7 @@ def _decadal_row_for(c: dict, wb_id: str, requested: date) -> Optional[dict]:
         scene_id=None if scene is None or pd.isna(scene) else str(scene),
         source_note=None,
         source="Sentinel-2 L2A (ESA/Copernicus)",
+        _opt_frame=sub.iloc[[i]],
     )
 
 
@@ -316,6 +322,7 @@ def run_pipeline(c: dict, wb_id: str, requested: date, mode: str = "satellite") 
 
     demo = not _is_real(c, "part1")
     pred = c["predictors"][mode]
+    is_two_stage = isinstance(pred["predictor"], adapters.TwoStageModelPredictor)
     f = provider.get_features(wb_id, requested)
 
     # Если есть полная декадная таблица (satellite_decadal), проверяем точный статус декады (лёд/облака/интерполяция),
@@ -328,7 +335,17 @@ def run_pipeline(c: dict, wb_id: str, requested: date, mode: str = "satellite") 
         return None
 
     status = f.get("obs_status")
-    obs_tsi, obs_trophic = _obs_tsi_fields(f.get("chl_a_current"), f.get("tsi_current"))
+    chl_current = f.get("chl_a_current")
+    tsi_raw = f.get("tsi_current")
+    base_notes = _base_notes(c, mode, f)
+    if is_two_stage and status not in NO_OBSERVATION and ("_frame" in f or "_opt_frame" in f):
+        chl_current = round(pred["predictor"].estimate_current(f), 2)
+        tsi_raw = None
+        base_notes.append(
+            "Текущий Chl-a откалиброван Моделью 1 (GLORIA Ridge, шкала проб БГУ) "
+            "для согласования с прогнозом Модели 2 (+10 дн.)."
+        )
+    obs_tsi, obs_trophic = _obs_tsi_fields(chl_current, tsi_raw)
     result = dict(
         water_body_id=wb_id, water_body_name=wb["name"], mode=mode, requested_date=requested,
         date_used=f["date_used"], horizon_days=HORIZON_DAYS, obs_status=status,
@@ -340,7 +357,7 @@ def run_pipeline(c: dict, wb_id: str, requested: date, mode: str = "satellite") 
         ndci_current=f.get("ndci_current"), b04_b02_ratio=f.get("b04_b02_ratio"),
         secchi_depth_m=f.get("secchi_depth_m"), total_phosphorus_ug_l=f.get("total_phosphorus_ug_l"),
         observation=_observation(f, demo), sources=_base_sources(c, mode, f),
-        notes=_base_notes(c, mode, f))
+        notes=base_notes)
 
     if status in NO_OBSERVATION:                                   # наблюдения нет: ничего не придумываем
         return {**result, "chl_a_current": None, "observed_tsi": None, "observed_trophic_class": None,
@@ -355,7 +372,7 @@ def run_pipeline(c: dict, wb_id: str, requested: date, mode: str = "satellite") 
         reason = (f"Прогноз недоступен: модель режима '{mode}' не подключена (Часть 2)"
                   if not pred["real"]
                   else "Декада восстановлена 1-шаговой интерполяцией: отображён фактический ряд, прогноз не строится")
-        return {**result, "chl_a_current": f["chl_a_current"], "chl_a_forecast": None,
+        return {**result, "chl_a_current": chl_current, "chl_a_forecast": None,
                 "pred_low_ug_l": None, "pred_high_ug_l": None, "uncertainty_ug_l": None,
                 "bloom_probability": None, "attention_probability": None,
                 "trophic_index": None, "trophic_class": None, "alert_level": None,
@@ -381,7 +398,7 @@ def run_pipeline(c: dict, wb_id: str, requested: date, mode: str = "satellite") 
             "расширенный контекст (ООПТ, запрет хим. альгицидов, каскад, стратификация, порог 15 мкг/л, "
             "метео, вероятности, TSI и рекомендации) работает через заглушки Части 4."
         )
-    return {**result, "chl_a_current": f["chl_a_current"], "chl_a_forecast": chl,
+    return {**result, "chl_a_current": chl_current, "chl_a_forecast": chl,
             "pred_low_ug_l": low, "pred_high_ug_l": high, "uncertainty_ug_l": mae,
             "bloom_probability": prob, "attention_probability": att,
             "trophic_index": v.trophic_index, "trophic_class": v.trophic_class, "alert_level": v.alert_level,
@@ -414,15 +431,23 @@ def history(c: dict, wb_id: str, mode: str = "satellite", end: Optional[date] = 
     demo = not _is_real(c, "part1")
     end = end or config.DEFAULT_DATE
     frame = provider.history_frame(wb_id, end, limit=limit)
+    predictor = c["predictors"][mode]["predictor"]
+    is_two_stage = isinstance(predictor, adapters.TwoStageModelPredictor)
     notes = []
     if demo:
         notes.append(DEMO_NOTE)
     elif not c["predictors"][mode]["real"]:
         notes.append("Модель режима не подключена: на графике только наблюдения, прогноз не строится.")
     preds = []
+    cal_curr = None
     if not frame.empty and (c["predictors"][mode]["real"] or demo):
         try:
-            preds = c["predictors"][mode]["predictor"].predict_many(frame)
+            if is_two_stage:
+                ext_frame = provider.history_frame(wb_id, end, limit=limit + 1)
+                preds = predictor.predict_many(ext_frame)[-len(frame):]
+                cal_curr = predictor.estimate_current_many(frame)
+            else:
+                preds = predictor.predict_many(frame)
         except Exception as e:             # noqa: BLE001 — историю без прогноза показываем честно
             notes.append(f"Прогноз для истории недоступен: {type(e).__name__}: {e}")
     mae = model_mae(c, mode) if preds else None
@@ -431,6 +456,8 @@ def history(c: dict, wb_id: str, mode: str = "satellite", end: Optional[date] = 
     obs_by_date: Dict[date, dict] = {}
     for i, (_, row) in enumerate(frame.iterrows()):
         m = provider.row_meta(row)
+        if cal_curr is not None and m["obs_status"] not in NO_OBSERVATION:
+            m["chl_a_current"] = round(float(cal_curr[i]), 2)
         has_obs = m["obs_status"] not in NO_OBSERVATION and m["chl_a_current"] is not None
         out = preds[i] if i < len(preds) else None
         forecast = out[0] if (out and has_obs) else None
@@ -447,18 +474,35 @@ def history(c: dict, wb_id: str, mode: str = "satellite", end: Optional[date] = 
     points = []
     if dec is not None and not dec.empty:
         sub = dec[(dec["water_body_id"] == wb_id) & (dec["date"] <= end)].tail(limit)
+        interp_cal: Dict[date, float] = {}
+        if is_two_stage and not sub.empty:
+            interp_mask = (~sub["obs_status"].isin(NO_OBSERVATION)) & (~sub["date"].isin(obs_by_date))
+            interp_sub = sub[interp_mask]
+            if not interp_sub.empty:
+                try:
+                    vals = predictor.estimate_current_many(interp_sub)
+                    interp_cal = {d: round(float(v), 2) for d, v in zip(interp_sub["date"], vals)}
+                except Exception:  # noqa: BLE001
+                    interp_cal = {}
         for _, row in sub.iterrows():
             d = row["date"]
             status = None if pd.isna(row.get("obs_status")) else str(row.get("obs_status"))
             is_interp = status == "interpolated_1step"
-            chl = None if status in NO_OBSERVATION else adapters._num(row.get("chl_a_est_ug_l"))
+            if status in NO_OBSERVATION:
+                chl = None
+            elif d in obs_by_date and obs_by_date[d]["chl_a_current"] is not None:
+                chl = obs_by_date[d]["chl_a_current"]
+            elif d in interp_cal:
+                chl = interp_cal[d]
+            else:
+                chl = adapters._num(row.get("chl_a_est_ug_l"))
             fc, fc_lo, fc_hi = pred_by_date.get(d, (None, None, None))
             points.append(dict(date=d, observed=None if chl is None else round(chl, 2),
                                obs_status=status, is_interpolated=is_interp,
                                forecast=fc, forecast_low=fc_lo, forecast_high=fc_hi))
     else:
         for i, (_, row) in enumerate(frame.iterrows()):
-            m = provider.row_meta(row)
+            m = obs_by_date[row["date"]]
             fc, fc_lo, fc_hi = pred_by_date.get(m["date"], (None, None, None))
             points.append(dict(date=m["date"], observed=m["chl_a_current"], obs_status=m["obs_status"],
                                is_interpolated=m["is_interpolated"], forecast=fc,
@@ -529,6 +573,8 @@ def timeline(c: dict, mode: str = "satellite") -> dict:
 
     demo = not _is_real(c, "part1")
     pred = c["predictors"][mode]
+    predictor = pred["predictor"]
+    is_two_stage = isinstance(predictor, adapters.TwoStageModelPredictor)
     has_forecast = bool(pred["real"] or demo)
     prov = c["providers"].get(mode)
     if prov is None:
@@ -545,17 +591,29 @@ def timeline(c: dict, mode: str = "satellite") -> dict:
         if frame.empty:
             continue
         preds = []
+        cal_curr = None
         if has_forecast:
             try:
-                preds = pred["predictor"].predict_many(frame)
+                preds = predictor.predict_many(frame)
+                if is_two_stage:
+                    cal_curr = predictor.estimate_current_many(frame)
             except Exception:  # noqa: BLE001
                 preds = []
+                cal_curr = None
         for idx, (_, row) in enumerate(frame.iterrows()):
             m = prov.row_meta(row)
             ds = m["date"].isoformat()
             status = m["obs_status"] or "valid"
-            chl = None if status in NO_OBSERVATION else m["chl_a_current"]
-            obs_tsi, _ = _obs_tsi_fields(chl, m.get("tsi_current"))
+            if status in NO_OBSERVATION:
+                chl = None
+                tsi_raw = None
+            elif cal_curr is not None:
+                chl = round(float(cal_curr[idx]), 2)
+                tsi_raw = None
+            else:
+                chl = m["chl_a_current"]
+                tsi_raw = m.get("tsi_current")
+            obs_tsi, _ = _obs_tsi_fields(chl, tsi_raw)
             fc_val = prob_val = alert_val = None
             if idx < len(preds) and chl is not None:
                 p_tuple = preds[idx]
@@ -579,6 +637,18 @@ def timeline(c: dict, mode: str = "satellite") -> dict:
 
     dec = c.get("decadal_df") if (mode == "satellite" and not demo) else None
     if dec is not None and not dec.empty:
+        interp_cal: Dict[Tuple[str, str], float] = {}
+        if is_two_stage:
+            interp_df = dec[dec["obs_status"] == "interpolated_1step"]
+            if not interp_df.empty:
+                try:
+                    vals = predictor.estimate_current_many(interp_df)
+                    interp_cal = {
+                        (str(wb), dt.isoformat()): round(float(v), 2)
+                        for wb, dt, v in zip(interp_df["water_body_id"], interp_df["date"], vals)
+                    }
+                except Exception:  # noqa: BLE001
+                    interp_cal = {}
         for _, row in dec.iterrows():
             wb_id = str(row["water_body_id"])
             ds = row["date"].isoformat()
@@ -592,8 +662,15 @@ def timeline(c: dict, mode: str = "satellite") -> dict:
                 if snap.get("cov") is None and cov is not None:
                     snap["cov"] = round(cov, 0)
             else:
-                chl = None if status in NO_OBSERVATION else adapters._num(row.get("chl_a_est_ug_l"))
-                tsi_raw = None if status in NO_OBSERVATION else adapters._num(row.get("tsi_est"))
+                if status in NO_OBSERVATION:
+                    chl = None
+                    tsi_raw = None
+                elif (wb_id, ds) in interp_cal:
+                    chl = interp_cal[(wb_id, ds)]
+                    tsi_raw = None
+                else:
+                    chl = adapters._num(row.get("chl_a_est_ug_l"))
+                    tsi_raw = adapters._num(row.get("tsi_est"))
                 obs_tsi, _ = _obs_tsi_fields(chl, tsi_raw)
                 snap = {
                     "s": status,

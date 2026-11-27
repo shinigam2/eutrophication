@@ -4,14 +4,18 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from lightgbm import LGBMRegressor
 from scipy.stats import spearmanr
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import HistGradientBoostingRegressor, RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import Ridge
-from sklearn.metrics import mean_absolute_error, root_mean_squared_error
+from sklearn.metrics import mean_absolute_error, roc_auc_score, root_mean_squared_error
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+
+try:
+    from lightgbm import LGBMRegressor
+except ImportError:
+    LGBMRegressor = None
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SAVED_MODELS_DIR = Path(__file__).resolve().parent / "saved_models"
@@ -108,7 +112,9 @@ def main() -> None:
                 n_jobs=-1,
             )),
         ]),
-        "LightGBM": LGBMRegressor(
+    }
+    if LGBMRegressor is not None:
+        models["LightGBM"] = LGBMRegressor(
             n_estimators=200,
             learning_rate=0.03,
             max_depth=4,
@@ -116,13 +122,21 @@ def main() -> None:
             min_child_samples=20,
             random_state=42,
             verbose=-1,
-        ),
-    }
+        )
+    else:
+        models["HistGB"] = HistGradientBoostingRegressor(
+            max_iter=200,
+            learning_rate=0.03,
+            max_depth=4,
+            min_samples_leaf=20,
+            random_state=42,
+        )
 
     best_name = None
     best_mae = float("inf")
     best_artifact = None
     candidates_metrics = {}
+    y_att_bin = (y_test >= 15.0).astype(int)
 
     for name, model in models.items():
         model.fit(X_train, y_train_log)
@@ -133,16 +147,18 @@ def main() -> None:
         rmse = float(root_mean_squared_error(y_test, y_pred))
         rho, _ = spearmanr(y_test, y_pred)
         log_residual_std = float(np.std(y_test_log - y_pred_log, ddof=1))
+        att_auc = float(roc_auc_score(y_att_bin, y_pred_log)) if 0 < y_att_bin.sum() < len(y_att_bin) else None
 
         candidates_metrics[name] = {
             "mae_ug_l": round(mae, 3),
             "rmse_ug_l": round(rmse, 3),
             "spearman_rho": round(float(rho), 3),
+            "attention_15_roc_auc": round(att_auc, 3) if att_auc is not None else None,
         }
 
         print(
             f"[{name:12s}]           | MAE: {mae:.2f} | RMSE: {rmse:.2f} | "
-            f"Spearman rho: {rho:+.3f}"
+            f"Spearman rho: {rho:+.3f}" + (f" | AUC>=15: {att_auc:.3f}" if att_auc is not None else "")
         )
 
         if mae < best_mae:
@@ -157,6 +173,7 @@ def main() -> None:
                 "test_mae_ug_l": round(mae, 3),
                 "test_rmse_ug_l": round(rmse, 3),
                 "test_spearman_rho": round(float(rho), 3),
+                "attention_15_roc_auc": round(att_auc, 3) if att_auc is not None else None,
                 "log_residual_std": round(max(log_residual_std, 0.15), 4),
                 "top_drivers": extract_top_drivers(model, feature_cols, top_n=5),
                 "naive_baseline": {
@@ -195,6 +212,7 @@ def main() -> None:
             "test_mae_ug_l": best_artifact["test_mae_ug_l"],
             "test_rmse_ug_l": best_artifact["test_rmse_ug_l"],
             "test_spearman_rho": best_artifact["test_spearman_rho"],
+            "attention_15_roc_auc": best_artifact["attention_15_roc_auc"],
             "naive_baseline": best_artifact["naive_baseline"],
             "candidates": best_artifact["candidates"],
             "top_drivers": best_artifact["top_drivers"],
