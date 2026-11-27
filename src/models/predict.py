@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 import joblib
 import numpy as np
@@ -25,6 +25,21 @@ def _clean_float(val, digits: int = 2) -> float | None:
     if val is None or pd.isna(val):
         return None
     return round(float(val), digits)
+
+
+def _next_decade_date(base_date_str: str) -> str:
+    """Возвращает дату следующей календарной декады (1, 11 или 21 число)."""
+    dt = datetime.strptime(base_date_str, "%Y-%m-%d")
+    if dt.day < 11:
+        next_dt = dt.replace(day=11)
+    elif dt.day < 21:
+        next_dt = dt.replace(day=21)
+    else:
+        if dt.month == 12:
+            next_dt = dt.replace(year=dt.year + 1, month=1, day=1)
+        else:
+            next_dt = dt.replace(month=dt.month + 1, day=1)
+    return next_dt.strftime("%Y-%m-%d")
 
 
 def predict_lake(lake_id: str, date: str | None = None) -> dict:
@@ -55,7 +70,7 @@ def predict_lake(lake_id: str, date: str | None = None) -> dict:
     chl_current = float(np.clip(np.expm1(reg_artifact["model"].predict(X_opt)[0]), 0.1, None))
     row_df["chl_a_current_ug_l"] = chl_current
 
-    # 2. Вызов Модели 2: прогноз концентрации через +10 дней
+    # 2. Вызов Модели 2: прогноз концентрации на следующую декаду
     X_fc = row_df[fc_artifact["feature_cols"]]
     pred_log = float(fc_artifact["model"].predict(X_fc)[0])
     chl_pred = float(np.clip(np.expm1(pred_log), 0.1, None))
@@ -71,9 +86,7 @@ def predict_lake(lake_id: str, date: str | None = None) -> dict:
 
     row = row_df.iloc[0]
     base_date_str = str(row["date"])[:10]
-    forecast_date_str = (
-        datetime.strptime(base_date_str, "%Y-%m-%d") + timedelta(days=10)
-    ).strftime("%Y-%m-%d")
+    forecast_date_str = _next_decade_date(base_date_str)
 
     return {
         "water_body_id": lake_id,
@@ -103,19 +116,19 @@ def save_predictions_to_json(lake_ids: list[str] | None = None) -> dict:
         lake_ids = sorted(df["water_body_id"].unique().tolist())
 
     results = {}
-    print("=== ПРОГНОЗ КОНЦЕНТРАЦИИ ХЛОРОФИЛЛА-А (СЕЙЧАС -> ЧЕРЕЗ 10 ДНЕЙ) ===")
+    print("=== ПРОГНОЗ КОНЦЕНТРАЦИИ ХЛОРОФИЛЛА-А (СЕЙЧАС -> СЛЕДУЮЩАЯ ДЕКАДА) ===")
     print(
-        f"{'Озеро':14s} | {'База':10s} | {'Сейчас':7s} | {'Прогноз +10д (коридор)':23s} | "
+        f"{'Озеро':14s} | {'База':10s} | {'Прогноз на':10s} | {'Сейчас':7s} | {'Прогноз (коридор)':23s} | "
         f"{'P(>=15)':7s} | {'P(>=25)':7s}"
     )
-    print("-" * 84)
+    print("-" * 97)
 
     for lid in lake_ids:
         res = predict_lake(lid)
         results[lid] = res
         corridor = f"{res['chl_a_pred_ug_l']:.2f} ({res['chl_a_pred_low_ug_l']:.1f}..{res['chl_a_pred_high_ug_l']:.1f})"
         print(
-            f"{lid:14s} | {res['base_date']:10s} | {res['chl_a_current_ug_l']:7.2f} | "
+            f"{lid:14s} | {res['base_date']:10s} | {res['date']:10s} | {res['chl_a_current_ug_l']:7.2f} | "
             f"{corridor:23s} | {res['attention_prob']*100:6.1f}% | {res['bloom_prob']*100:6.1f}%"
         )
 
@@ -130,5 +143,4 @@ def save_predictions_to_json(lake_ids: list[str] | None = None) -> dict:
 
 
 if __name__ == "__main__":
-    # Для одного озера можно вызвать: save_predictions_to_json(["naroch"])
     save_predictions_to_json()

@@ -1,13 +1,13 @@
 {
-  "generated_at_utc": "2026-11-26T16:34:24Z",
+  "generated_at_utc": "2026-11-27T00:11:06Z",
   "forecast_horizon_days": 10,
   "predictions": {
     "batorino": {
       "water_body_id": "batorino",
       "base_date": "2026-11-11",
-      "chl_a_current_ug_l": 5.93,   /*текущее содержание*/
+      "chl_a_current_ug_l": 5.93,
       "date": "2026-11-21",
-      "chl_a_pred_ug_l": 5.47,  /*предикт содержание*/
+      "chl_a_pred_ug_l": 5.47,
       "chl_a_pred_low_ug_l": 2.5,
       "chl_a_pred_high_ug_l": 8.44,
       "attention_threshold_ug_l": 15.0,
@@ -144,7 +144,7 @@
       "water_body_id": "rudakovo",
       "base_date": "2026-10-21",
       "chl_a_current_ug_l": 1.51,
-      "date": "2026-10-31",
+      "date": "2026-11-01",
       "chl_a_pred_ug_l": 2.53,
       "chl_a_pred_low_ug_l": 0.1,
       "chl_a_pred_high_ug_l": 5.5,
