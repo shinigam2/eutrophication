@@ -13,15 +13,17 @@ import importlib
 import inspect
 import json
 import math
+from calendar import monthrange
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 import joblib
 import pandas as pd
 import yaml
 
-from src.api.stubs import AlertVerdict
+from src.api.stubs import AlertVerdict, enrich_verdict_with_stubs
 
 
 class IntegrationError(RuntimeError):
@@ -465,10 +467,22 @@ SYNONYMS = {
             "chl", "forecast_chl", "chla_pred", "c_hat", "chl_a_hat", "chl_a_pred_10d"],
     "prob": ["bloom_prob", "bloom_probability", "p_bloom", "prob", "probability", "p_hat", "bloom_proba",
              "pred_bloom_prob", "bloom_prob_pred", "p_bloom_pred"],
+    "attention_prob": ["attention_prob", "attention_probability", "p_attention", "att_prob"],
     "temp": ["temp_mean_14d", "t14", "temp_14d", "temperature_14d", "temp_mean_14"],
     "calm": ["calm_fraction_7d", "calm_frac_7d", "calm_fraction", "calm_share_7d", "calm_7d"],
+    "lake_meta": ["lake_meta", "water_body_meta", "meta"],
 }
 ENGINE_METHODS = ("assess", "evaluate", "evaluate_alert", "classify", "predict_alert", "get_verdict", "run")
+
+ALERT_LEVEL_MAP = {
+    "GREEN": "GREEN",
+    "BELOW_THRESHOLD": "GREEN",
+    "OK": "GREEN",
+    "NORMAL": "GREEN",
+    "RED": "RED",
+    "WARNING": "RED",
+    "ALERT": "RED",
+}
 
 
 def _get(o, keys):
@@ -485,11 +499,24 @@ def _as_list(v) -> List[str]:
     return [str(v)] if isinstance(v, str) else [str(x) for x in v]
 
 
+def _normalize_decade_start(d: date) -> date:
+    """Приводит произвольную дату (в т.ч. лабораторной пробы) к началу календарной декады (1/11/21),
+    как того требует Часть 3 (graph_cli.parse_period_start / insert_record)."""
+    if isinstance(d, str):
+        d = date.fromisoformat(d[:10])
+    if d.day <= 10:
+        return d.replace(day=1)
+    if d.day <= 20:
+        return d.replace(day=11)
+    return d.replace(day=21)
+
+
 def to_verdict(o) -> AlertVerdict:
-    level = _get(o, ["alert_level", "level", "alert", "status"])
-    level = str(getattr(level, "name", level)).upper().split(".")[-1]
-    if level not in ("GREEN", "YELLOW", "RED"):
-        raise IntegrationError(f"Уровень тревоги '{level}' не из GREEN/YELLOW/RED (объект: {o!r:.200})")
+    raw_level = _get(o, ["alert_level", "alertStatus", "alert_status", "level", "alert", "status"])
+    norm = str(getattr(raw_level, "name", raw_level)).strip().upper().split(".")[-1]
+    level = ALERT_LEVEL_MAP.get(norm)
+    if level is None:
+        raise IntegrationError(f"Уровень тревоги '{norm}' не из GREEN/RED (warning/below_threshold; объект: {o!r:.200})")
     tsi = _num(_get(o, ["trophic_index", "tsi", "carlson_index", "tsi_carson", "tsi_value"]))
     return AlertVerdict(
         alert_level=level, trophic_index=round(tsi, 1) if tsi is not None else 0.0,
@@ -499,7 +526,9 @@ def to_verdict(o) -> AlertVerdict:
 
 
 class RealGraphEngine:
-    """Обёртка над WaterKnowledgeGraphEngine из Части 3."""
+    """Обёртка над WaterKnowledgeGraphEngine из Части 3 (пользовательский класс)."""
+
+    threshold_ug_l: float = 25.0
 
     def __init__(self, module: str, ontology_path: Optional[Path] = None):
         mod = importlib.import_module(module)
@@ -518,10 +547,25 @@ class RealGraphEngine:
     def describe(self) -> str:
         return f"{self.method}{inspect.signature(getattr(self.engine, self.method))}"
 
-    def assess(self, wb_id, wb_name, d, chl, prob, temp14, calm7) -> AlertVerdict:
+    def assess(
+        self,
+        wb_id,
+        wb_name,
+        d,
+        chl,
+        prob,
+        temp14,
+        calm7,
+        *,
+        attention_prob=None,
+        lake_meta=None,
+        registry=None,
+    ) -> AlertVerdict:
         fn = getattr(self.engine, self.method)
-        values = dict(water_body_id=wb_id, water_body_name=wb_name, date=d, chl=chl, prob=prob,
-                      temp=temp14, calm=calm7)
+        values = dict(
+            water_body_id=wb_id, water_body_name=wb_name, date=d, chl=chl, prob=prob,
+            attention_prob=attention_prob, temp=temp14, calm=calm7, lake_meta=lake_meta,
+        )
         kwargs = {}
         for pname, p in inspect.signature(fn).parameters.items():
             key = next((k for k, syn in SYNONYMS.items() if pname in syn), None)
@@ -530,6 +574,211 @@ class RealGraphEngine:
             elif p.default is inspect.Parameter.empty and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY):
                 raise IntegrationError(f"Не знаю, что передать в параметр '{pname}': {self.describe()}")
         return to_verdict(fn(**kwargs))
+
+
+class GraphCliEngine:
+    """Адаптер к реальной Части 3 (src/knowledge_graph/graph_cli.py + data/knowledge_graph/graph.ttl + Oxigraph).
+
+    Выполняет настоящие SPARQL-правила Части 3 (CREATE_ALERTS и HISTORY) поверх RDF-графа:
+      - alertStatus == "warning"         -> GREEN/RED: "RED"   (chl >= eutro:thresholdUgL)
+      - alertStatus == "below_threshold" -> GREEN/RED: "GREEN" (chl <  eutro:thresholdUgL)
+    Если задан OXIGRAPH_URL и Oxigraph доступен — сначала проверяет сохранённый прогноз в Oxigraph,
+    иначе выполняет те же SPARQL-правила локально в памяти через rdflib без записи в graph.ttl на диске.
+
+    Расширенный контекст (ООПТ, запрет хим. альгицидов, каскад, глубина/стратификация, порог внимания
+    15 мкг/л, метеофакторы, вероятности, индекс Карлсона TSI и рекомендации) сохраняется через
+    модульные заглушки enrich_verdict_with_stubs() до переноса этих правил в онтологию Части 3.
+    """
+
+    def __init__(
+        self,
+        module: str = "src.knowledge_graph.graph_cli",
+        ontology_path: Optional[Path] = None,
+        oxigraph_url: Optional[str] = None,
+    ):
+        try:
+            from rdflib import Graph, Literal, Namespace, RDF, URIRef, XSD
+            from rdflib.plugins.sparql import prepareQuery, prepareUpdate
+        except ImportError as exc:
+            raise IntegrationError("Для подключения Части 3 (graph_cli) требуется пакет rdflib") from exc
+
+        self._Graph = Graph
+        self._Literal = Literal
+        self._RDF = RDF
+        self._URIRef = URIRef
+        self._XSD = XSD
+
+        self.mod = importlib.import_module(module)
+        required = ("load_graph", "CREATE_ALERTS", "HISTORY", "PREFIXES", "BASE_IRI", "ALERT_RULE_ID", "SEED_RULE", "read_history")
+        missing = [name for name in required if not hasattr(self.mod, name)]
+        if missing:
+            raise IntegrationError(f"В модуле {module} отсутствуют атрибуты Части 3: {missing}")
+
+        self.ontology_path = Path(ontology_path) if ontology_path else None
+        self.oxigraph_url = oxigraph_url.rstrip("/") if oxigraph_url else None
+        self._eutro = Namespace(self.mod.BASE_IRI)
+        self._rule_uri = self._eutro[self.mod.ALERT_RULE_ID]
+
+        try:
+            if self.ontology_path is not None and self.ontology_path.is_file():
+                base_graph = self.mod.load_graph(self.ontology_path)
+            else:
+                base_graph = Graph()
+                base_graph.bind("eutro", self._eutro, replace=True)
+        except Exception as exc:  # noqa: BLE001
+            raise IntegrationError(f"Не удалось прочитать RDF-граф Части 3 ({self.ontology_path}): {exc}") from exc
+
+        # Если правило порога ещё не задано в графе — сеем дефолт Части 3 (25 мкг/л), не перетирая кастомный порог.
+        if not list(base_graph.objects(self._rule_uri, self._eutro.thresholdUgL)):
+            base_graph.update(self.mod.PREFIXES + self.mod.SEED_RULE)
+
+        # Отделяем статические триплы (правила, WaterBody, будущие свойства ООПТ/каскада) от ранее
+        # записанных Forecast/Observation/Alert/Period, чтобы вызовы assess() не конфликтовали друг с другом.
+        dynamic_types = (self._eutro.Forecast, self._eutro.Observation, self._eutro.Alert)
+        dynamic_subjects = {
+            s for dtype in dynamic_types for s in base_graph.subjects(RDF.type, dtype)
+        }
+        period_subjects = set(base_graph.subjects(self._eutro.start, None))
+        skip_subjects = dynamic_subjects | period_subjects
+        self._base_triples = [
+            tr for tr in base_graph
+            if tr[0] not in skip_subjects and tr[2] not in dynamic_subjects
+        ]
+
+        # Считываем порог непосредственно из RDF-графа (eutro:chlorophyll-alert eutro:thresholdUgL ?t)
+        thresholds = [
+            _num(obj) for obj in base_graph.objects(self._rule_uri, self._eutro.thresholdUgL)
+        ]
+        valid_thr = [t for t in thresholds if t is not None and t > 0]
+        self.threshold_ug_l = float(valid_thr[0]) if valid_thr else 25.0
+
+        # Индекс зарегистрированных в graph.ttl водоёмов (waterBodyId -> URIRef)
+        self._registered_waters: Dict[str, object] = {}
+        for subj, obj in base_graph.subject_objects(self._eutro.waterBodyId):
+            self._registered_waters[str(obj)] = subj
+
+        # Предкомпилируем точные SPARQL-правила Части 3 (ускоряет вызов с ~160 мс до ~3.5 мс)
+        self._create_alerts = prepareUpdate(self.mod.PREFIXES + self.mod.CREATE_ALERTS)
+        self._history_query = prepareQuery(
+            self.mod.PREFIXES + self.mod.HISTORY.substitute(period_values="", filters="")
+        )
+
+    def describe(self) -> str:
+        src = self.ontology_path.name if self.ontology_path else "memory"
+        oxi = f", Oxigraph={self.oxigraph_url}" if self.oxigraph_url else ""
+        return f"{src}, порог {self.threshold_ug_l:g} мкг/л, 2 уровня GREEN/RED{oxi}"
+
+    def _try_oxigraph(self, wb_id: str, period_start: date, chl: float) -> Optional[Tuple[str, float]]:
+        if not self.oxigraph_url:
+            return None
+        try:
+            rows = self.mod.read_history(None, wb_id, endpoint=self.oxigraph_url, period_start=period_start)
+        except (OSError, ValueError):
+            return None
+        for row in rows:
+            pred = _num(row.get("predictedUgL"))
+            status = row.get("alertStatus")
+            if pred is not None and abs(pred - float(chl)) <= 0.1 and status in ("warning", "below_threshold"):
+                thr = _num(row.get("thresholdUgL")) or self.threshold_ug_l
+                return str(status), float(thr)
+        return None
+
+    def _evaluate_rdflib(self, wb_id: str, wb_name: Optional[str], period_start: date, chl: float) -> Tuple[str, float]:
+        Graph, Literal, RDF, URIRef, XSD = self._Graph, self._Literal, self._RDF, self._URIRef, self._XSD
+        eutro = self._eutro
+
+        work = Graph()
+        for triple in self._base_triples:
+            work.add(triple)
+
+        water_segment = quote(str(wb_id), safe="")
+        water = self._registered_waters.get(str(wb_id)) or URIRef(f"{self.mod.BASE_IRI}water/{water_segment}")
+        last_day = monthrange(period_start.year, period_start.month)[1]
+        period_end = period_start.replace(day=last_day if period_start.day == 21 else period_start.day + 9)
+        period = URIRef(f"{self.mod.BASE_IRI}period/{period_start.isoformat()}")
+        record = URIRef(f"{self.mod.BASE_IRI}forecast/{water_segment}/{period_start.isoformat()}")
+
+        work.add((water, RDF.type, eutro.WaterBody))
+        work.add((water, eutro.waterBodyId, Literal(str(wb_id))))
+        if wb_name and not list(work.objects(water, eutro.name)):
+            work.add((water, eutro.name, Literal(str(wb_name))))
+        work.add((period, eutro.start, Literal(period_start.isoformat(), datatype=XSD.date)))
+        work.add((period, eutro.end, Literal(period_end.isoformat(), datatype=XSD.date)))
+        work.add((record, RDF.type, eutro.Forecast))
+        work.add((record, eutro.waterBody, water))
+        work.add((record, eutro.period, period))
+        work.add((record, eutro.chlorophyllUgL, Literal(float(chl))))
+        work.add((record, eutro.usesRule, self._rule_uri))
+
+        work.update(self._create_alerts)
+        rows = list(work.query(self._history_query))
+        for row in rows:
+            if str(row.waterBodyId) == str(wb_id) and str(row.periodStart) == period_start.isoformat():
+                status = str(row.alertStatus) if row.alertStatus is not None else "below_threshold"
+                thr = _num(row.thresholdUgL) or self.threshold_ug_l
+                return status, float(thr)
+        raise IntegrationError(f"SPARQL-запрос Части 3 (HISTORY) не вернул запись для {wb_id}/{period_start}")
+
+    def assess(
+        self,
+        wb_id: str,
+        wb_name: str,
+        d: date,
+        chl: float,
+        prob: Optional[float],
+        temp14: Optional[float],
+        calm7: Optional[float],
+        *,
+        attention_prob: Optional[float] = None,
+        lake_meta: Optional[dict] = None,
+        registry: Optional[Dict[str, dict]] = None,
+    ) -> AlertVerdict:
+        period_start = _normalize_decade_start(d)
+        oxi_hit = self._try_oxigraph(wb_id, period_start, chl)
+        if oxi_hit is not None:
+            alert_status, threshold = oxi_hit
+            backend = "Oxigraph"
+        else:
+            alert_status, threshold = self._evaluate_rdflib(wb_id, wb_name, period_start, chl)
+            backend = f"rdflib/{self.ontology_path.name}" if self.ontology_path else "rdflib"
+
+        level = ALERT_LEVEL_MAP.get(alert_status.upper())
+        if level is None:
+            raise IntegrationError(f"Неожиданный alertStatus из Части 3: {alert_status!r}")
+
+        cmp_op = "≥" if level == "RED" else "<"
+        base_reasons = [
+            f"Граф знаний (Часть 3, {backend}, правило {self.mod.ALERT_RULE_ID}): "
+            f"прогноз Chl-a {float(chl):.1f} мкг/л {cmp_op} порога {threshold:g} мкг/л → {alert_status} ({level})"
+        ]
+        return enrich_verdict_with_stubs(
+            level,
+            float(chl),
+            threshold_ug_l=threshold,
+            base_reasons=base_reasons,
+            bloom_prob=prob,
+            attention_prob=attention_prob,
+            temp14=temp14,
+            calm7=calm7,
+            lake_meta=lake_meta,
+            registry=registry,
+        )
+
+
+def load_graph_engine(
+    module: str,
+    ontology_path: Optional[Path] = None,
+    oxigraph_url: Optional[str] = None,
+):
+    """Автоматически выбирает адаптер Части 3: класс WaterKnowledgeGraphEngine или модуль graph_cli."""
+    mod = importlib.import_module(module)
+    if getattr(mod, "WaterKnowledgeGraphEngine", None) is not None:
+        return RealGraphEngine(module, ontology_path)
+    if hasattr(mod, "CREATE_ALERTS") and hasattr(mod, "HISTORY"):
+        return GraphCliEngine(module, ontology_path, oxigraph_url)
+    raise IntegrationError(
+        f"В модуле {module} нет ни класса WaterKnowledgeGraphEngine, ни SPARQL-правил graph_cli (CREATE_ALERTS/HISTORY)"
+    )
 
 
 def load_metrics(path: Path) -> dict:

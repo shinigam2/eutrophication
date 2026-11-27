@@ -127,13 +127,22 @@ def build_components() -> dict:
     c["metrics_path"] = metrics_path
     c["quality"] = adapters.load_quality(config.find_quality())
 
-    # Часть 3: машина логического вывода
-    if _module_available(config.ENGINE_MODULE):
-        c["engine"] = adapters.RealGraphEngine(config.ENGINE_MODULE, config.find_ontology())
+    # Часть 3: граф знаний (WaterKnowledgeGraphEngine или реальный graph_cli + graph.ttl / Oxigraph)
+    ontology_path = config.find_ontology()
+    oxi_url = config.oxigraph_url()
+    explicit_engine = os.environ.get("WATER_ENGINE_MODULE")
+    if explicit_engine and _module_available(explicit_engine):
+        c["engine"] = adapters.load_graph_engine(explicit_engine, ontology_path, oxi_url)
+        status["part3"] = f"реальная: {explicit_engine} ({c['engine'].describe()})"
+    elif _module_available(config.ENGINE_MODULE):
+        c["engine"] = adapters.RealGraphEngine(config.ENGINE_MODULE, ontology_path)
         status["part3"] = f"реальная: {config.ENGINE_MODULE}.{c['engine'].describe()}"
+    elif _module_available(config.GRAPH_CLI_MODULE) and (ontology_path is not None or oxi_url is not None):
+        c["engine"] = adapters.GraphCliEngine(config.GRAPH_CLI_MODULE, ontology_path, oxi_url)
+        status["part3"] = f"реальная: {config.GRAPH_CLI_MODULE} ({c['engine'].describe()}; доп. контекст — заглушки)"
     else:
         c["engine"] = stubs.StubGraphEngine()
-        status["part3"] = _missing(config.ENGINE_MODULE)
+        status["part3"] = _missing(f"{config.GRAPH_CLI_MODULE} + data/knowledge_graph/graph.ttl")
 
     c["status"] = status
     c["stub_parts"] = [PART_NAMES[k] for k in PART_NAMES if str(status[k]).startswith("заглушка")]
@@ -203,7 +212,10 @@ def _base_sources(c: dict, mode: str, f: dict) -> List[str]:
     if c["predictors"][mode]["real"]:
         src.append("Модели Части 2: " + ", ".join(c["predictors"][mode]["names"]))
     if _is_real(c, "part3"):
-        src.append("Граф знаний W3C SOSA/SSN (Часть 3)")
+        if isinstance(c.get("engine"), adapters.GraphCliEngine):
+            src.append("Граф знаний RDF/SPARQL (Часть 3: graph_cli / graph.ttl, 2 уровня GREEN/RED)")
+        else:
+            src.append("Граф знаний W3C SOSA/SSN (Часть 3)")
     if f.get("source_note"):
         src.append(f"Примечание к пробе: {f['source_note']}")
     return src
@@ -346,13 +358,32 @@ def run_pipeline(c: dict, wb_id: str, requested: date, mode: str = "satellite") 
         low, high = round(max(chl - mae, 0.0), 2), round(chl + mae, 2)
     else:
         notes.append("В model_metrics.json нет MAE — доверительный интервал не рассчитан.")
-    v = c["engine"].assess(wb_id, wb["name"], f["date_used"], chl, prob,   # Часть 3
-                           f["temp_mean_14d"], f["calm_fraction_7d"])
+    v = _assess_verdict(                                           # Часть 3
+        c["engine"], wb_id, wb, f["date_used"], chl, prob,
+        f["temp_mean_14d"], f["calm_fraction_7d"], att, c["registry"],
+    )
+    if isinstance(c.get("engine"), adapters.GraphCliEngine):
+        thr = getattr(c["engine"], "threshold_ug_l", 25.0)
+        notes.append(
+            f"Граф знаний Части 3 (graph_cli) выдаёт 2-уровневый статус (GREEN/RED, порог {thr:g} мкг/л); "
+            "расширенный контекст (ООПТ, запрет хим. альгицидов, каскад, стратификация, порог 15 мкг/л, "
+            "метео, вероятности, TSI и рекомендации) работает через заглушки Части 4."
+        )
     return {**result, "chl_a_current": f["chl_a_current"], "chl_a_forecast": chl,
             "pred_low_ug_l": low, "pred_high_ug_l": high, "uncertainty_ug_l": mae,
             "bloom_probability": prob, "attention_probability": att,
             "trophic_index": v.trophic_index, "trophic_class": v.trophic_class, "alert_level": v.alert_level,
             "reasons": v.reasons, "recommendations": v.recommendations, "notes": notes}
+
+
+def _assess_verdict(engine, wb_id, wb, date_used, chl, prob, temp14, calm7, att, registry):
+    try:
+        return engine.assess(
+            wb_id, wb["name"], date_used, chl, prob, temp14, calm7,
+            attention_prob=att, lake_meta=wb, registry=registry,
+        )
+    except TypeError:
+        return engine.assess(wb_id, wb["name"], date_used, chl, prob, temp14, calm7)
 
 
 def _predict_one(predictor, f: dict):
@@ -518,14 +549,8 @@ def timeline(c: dict, mode: str = "satellite") -> dict:
                 p_tuple = preds[idx]
                 fc_val = round(float(p_tuple[0]), 2)
                 prob_val = round(float(p_tuple[1]), 3)
-                t14 = m.get("temp_mean_14d")
-                c7 = m.get("calm_fraction_7d")
-                if fc_val >= 25 or prob_val >= 0.5:
-                    alert_val = "RED"
-                elif fc_val >= 15 or (t14 is not None and c7 is not None and t14 >= 20.0 and c7 >= 0.30):
-                    alert_val = "YELLOW"
-                else:
-                    alert_val = "GREEN"
+                thr = float(getattr(c.get("engine"), "threshold_ug_l", 25.0))
+                alert_val = "RED" if fc_val >= thr else "GREEN"
             cov = m.get("water_coverage_pct")
             feat_lookup[(wb_id, ds)] = {
                 "s": status,

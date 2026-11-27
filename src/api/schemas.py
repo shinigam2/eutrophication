@@ -13,7 +13,6 @@ class Mode(str, Enum):
 
 class AlertLevel(str, Enum):
     GREEN = "GREEN"
-    YELLOW = "YELLOW"
     RED = "RED"
 
 
@@ -87,7 +86,10 @@ class AlertResponse(BaseModel):
     attention_probability: Optional[float] = Field(None, ge=0, le=1, description="Вероятность уровня внимания (>=15 мкг/л), если модель её отдаёт")
     trophic_index: Optional[float] = Field(None, description="Индекс Карлсона")
     trophic_class: Optional[str] = None
-    alert_level: Optional[AlertLevel] = Field(None, description="Нет, если на декаду нет наблюдения")
+    alert_level: Optional[AlertLevel] = Field(
+        None,
+        description="2 уровня тревоги (GREEN — ниже порога, RED — предупреждение ≥25 мкг/л); None, если на декаду нет наблюдения",
+    )
     reasons: List[str]
     recommendations: List[str]
     temp_mean_14d: Optional[float] = None

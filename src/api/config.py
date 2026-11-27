@@ -53,9 +53,21 @@ DECADAL_CANDIDATES = [
     "data/interim/satellite_decadal.csv",
     "data/processed/satellite_decadal.parquet",
 ]
-ONTOLOGY_CANDIDATES = ["src/knowledge_graph/ontology.ttl", "ontology.ttl", "data/ontology.ttl"]
+ONTOLOGY_CANDIDATES = [
+    "data/knowledge_graph/graph.ttl",
+    "src/knowledge_graph/ontology.ttl",
+    "ontology.ttl",
+    "data/ontology.ttl",
+]
 LAB_CSV_CANDIDATES = ["data/lab/lab_measurements.csv", "lab_measurements.csv", "data/lab_measurements.csv"]
 ENGINE_MODULE = os.environ.get("WATER_ENGINE_MODULE", "src.knowledge_graph.graph_engine")
+GRAPH_CLI_MODULE = "src.knowledge_graph.graph_cli"
+
+
+def oxigraph_url():
+    """Необязательный URL запущенного Oxigraph (OXIGRAPH_URL или WATER_OXIGRAPH_URL)."""
+    url = os.environ.get("OXIGRAPH_URL") or os.environ.get("WATER_OXIGRAPH_URL")
+    return url.strip() if url and url.strip() else None
 
 
 def root() -> Path:

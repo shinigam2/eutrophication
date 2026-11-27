@@ -20,6 +20,9 @@ WATER_BODIES: Dict[str, dict] = {
         bbox=dict(min_lat=53.97, min_lon=27.22, max_lat=54.03, max_lon=27.33),
         area_km2=31.0, mean_depth_m=3.5, max_depth_m=8.0, volume_mln_m3=108.0,
         watershed_km2=562.0, watershed_ratio=18.1, protected_area=None,
+        chemical_treatment_allowed=True, stratification_type="polymictic_shallow",
+        cascade_inflow_from=[], cascade_outflow_to=None,
+        attention_ug_l=15.0, bloom_ug_l=25.0,
         lab_base=3.0, lab_amp=12.0, base=3.0, amp=42.0),
     "naroch": dict(
         id="naroch", name="Озеро Нарочь", type="lake",
@@ -28,6 +31,9 @@ WATER_BODIES: Dict[str, dict] = {
         area_km2=79.6, mean_depth_m=8.9, max_depth_m=24.8, volume_mln_m3=710.0,
         watershed_km2=199.0, watershed_ratio=2.5,
         protected_area="ГПУ «Национальный парк „Нарочанский“»",
+        chemical_treatment_allowed=False, stratification_type="dimictic_deep",
+        cascade_inflow_from=[], cascade_outflow_to=None,
+        attention_ug_l=15.0, bloom_ug_l=25.0,
         lab_base=1.0, lab_amp=3.0, base=2.0, amp=15.0),
 }
 
@@ -201,7 +207,7 @@ class StubPredictor:
         return self.predict_frame(frame)
 
 
-# ---------- Часть 3: граф знаний и правила ----------
+# ---------- Часть 3: граф знаний и правила (2 уровня: GREEN / RED + заглушки доп. правил) ----------
 @dataclass
 class AlertVerdict:
     alert_level: str
@@ -211,44 +217,221 @@ class AlertVerdict:
     recommendations: List[str] = field(default_factory=list)
 
 
+STRATIFICATION_STUB_RU: Dict[str, str] = {
+    "polymictic_shallow": "мелководное полимиктическое (быстрый прогрев и взмучивание донных отложений)",
+    "weakly_stratified": "слабо стратифицированное (переходный термический режим)",
+    "dimictic_deep": "глубокое димиктическое (устойчивая летняя термическая стратификация)",
+}
+
+
 def carlson_tsi(chl: float) -> float:
+    """[STUB-HOOK: индекс Карлсона TSI] Пока не вычисляется в RDF-графе Части 3."""
     return round(9.81 * math.log(max(chl, 0.1)) + 30.6, 1)
 
 
 def trophic_class(tsi: float) -> str:
+    """[STUB-HOOK: трофический класс по TSI] Пока не вычисляется в RDF-графе Части 3."""
     if tsi < 40: return "олиготрофный"
     if tsi < 50: return "мезотрофный"
     if tsi < 70: return "эвтрофный"
     return "гиперэвтрофный"
 
 
-class StubGraphEngine:
-    """Имитация WaterKnowledgeGraphEngine.assess(...)."""
+def _resolve_lake_label(lake_id: str, registry: Optional[Dict[str, dict]]) -> str:
+    if registry and lake_id in registry:
+        return str(registry[lake_id].get("name") or lake_id)
+    return lake_id
 
-    def assess(self, wb_id: str, wb_name: str, d: date, chl: float, prob: float,
-               temp14: float, calm7: float) -> AlertVerdict:
-        reasons, recs = [], []
-        hot_calm = temp14 >= 20.0 and calm7 >= 0.30
-        if chl >= 25 or prob >= 0.5:
+
+def stub_attention_and_prob_reasons(
+    chl: float,
+    level: str,
+    threshold_ug_l: float,
+    attention_ug_l: float,
+    bloom_prob: Optional[float],
+    attention_prob: Optional[float],
+) -> List[str]:
+    """[STUB-HOOK] Порог внимания (15 мкг/л) и вероятности attention_prob / bloom_prob.
+    Не создаёт 3-й уровень тревоги: статус остаётся бинарным (GREEN / RED)."""
+    out: List[str] = []
+    if level == "GREEN" and attention_ug_l < threshold_ug_l and chl >= attention_ug_l:
+        out.append(
+            f"Доп. ориентир (заглушка): прогноз Chl-a {chl:.1f} мкг/л достиг порога внимания "
+            f"({attention_ug_l:g} мкг/л), но ниже порога предупреждения ({threshold_ug_l:g} мкг/л)"
+        )
+    if bloom_prob is not None and (level == "RED" or bloom_prob >= 0.5):
+        out.append(f"Вероятность цветения (≥{threshold_ug_l:g} мкг/л): {bloom_prob:.0%}")
+    if attention_prob is not None and attention_prob >= 0.5:
+        out.append(f"Вероятность порога внимания (≥{attention_ug_l:g} мкг/л): {attention_prob:.0%}")
+    return out
+
+
+def stub_meteo_reasons(temp14: Optional[float], calm7: Optional[float]) -> List[str]:
+    """[STUB-HOOK] Метеофакторы (temp_mean_14d, calm_fraction_7d) — до переноса правил в Часть 3."""
+    if temp14 is None and calm7 is None:
+        return []
+    if temp14 is not None and calm7 is not None:
+        if temp14 >= 20.0 and calm7 >= 0.30:
+            return [
+                f"Метеоконтекст (заглушка): тепло-штилевые условия "
+                f"(T14={temp14:.1f} °C, доля штиля 7д={calm7:.0%}) способствуют цветению"
+            ]
+        return [f"Метеоконтекст (заглушка): T14={temp14:.1f} °C, доля штиля 7д={calm7:.0%}"]
+    if temp14 is not None:
+        return [f"Метеоконтекст (заглушка): средняя температура за 14 д = {temp14:.1f} °C"]
+    return [f"Метеоконтекст (заглушка): доля штиля за 7 д = {calm7:.0%}"]
+
+
+def stub_morphometry_and_cascade_reasons(
+    level: str,
+    chl: float,
+    attention_ug_l: float,
+    lake_meta: Optional[dict],
+    registry: Optional[Dict[str, dict]],
+) -> List[str]:
+    """[STUB-HOOK] Глубина/стратификация и гидрологический каскад (water_bodies.yaml)."""
+    if not lake_meta:
+        return []
+    out: List[str] = []
+    strat = lake_meta.get("stratification_type")
+    depth = lake_meta.get("mean_depth_m")
+    if strat or depth is not None:
+        strat_txt = STRATIFICATION_STUB_RU.get(str(strat), str(strat)) if strat else None
+        parts = []
+        if depth is not None:
+            parts.append(f"ср. глубина {float(depth):.1f} м")
+        if strat_txt:
+            parts.append(strat_txt)
+        out.append(f"Морфометрия и стратификация (заглушка): {', '.join(parts)}")
+
+    inflows = [str(x) for x in (lake_meta.get("cascade_inflow_from") or []) if x]
+    outflow = lake_meta.get("cascade_outflow_to")
+    if inflows or outflow:
+        chain_parts = []
+        if inflows:
+            in_names = ", ".join(_resolve_lake_label(x, registry) for x in inflows)
+            chain_parts.append(f"приток ← {in_names}")
+        if outflow:
+            chain_parts.append(f"сток → {_resolve_lake_label(str(outflow), registry)}")
+        suffix = (
+            " — повышенный риск переноса биогенов вниз по каскаду"
+            if (level == "RED" or chl >= attention_ug_l) and outflow
+            else ""
+        )
+        out.append(f"Гидрологический каскад (заглушка): {'; '.join(chain_parts)}{suffix}")
+    return out
+
+
+def stub_recommendations(
+    level: str,
+    chl: float,
+    attention_ug_l: float,
+    lake_meta: Optional[dict],
+    registry: Optional[Dict[str, dict]],
+) -> List[str]:
+    """[STUB-HOOK] Природоохранные рекомендации с учётом ООПТ, запрета альгицидов и каскада."""
+    if level == "RED":
+        recs = [
+            "Усилить отбор проб воды и контроль прозрачности",
+            "Проверить концентрацию цианотоксинов",
+            "Уведомить Минприроды и рассмотреть ограничение купания",
+        ]
+    elif chl >= attention_ug_l:
+        recs = [
+            "Плановый мониторинг с усиленным наблюдением (превышен ориентир внимания 15 мкг/л)",
+            "Подготовить внеочередной отбор проб при сохранении тёплой безветренной погоды",
+        ]
+    else:
+        recs = ["Плановый мониторинг"]
+
+    if lake_meta:
+        protected = lake_meta.get("protected_area")
+        chem_allowed = lake_meta.get("chemical_treatment_allowed")
+        if chem_allowed is False:
+            oopt_tag = f" ({protected})" if protected else ""
+            recs.append(
+                f"Ограничение ООПТ{oopt_tag}: применение химических альгицидов запрещено — "
+                f"допустимы только механические, биоманипуляционные и организационные меры"
+            )
+        elif protected:
+            recs.append(f"Соблюдать природоохранный режим ООПТ: {protected}")
+
+        outflow = lake_meta.get("cascade_outflow_to")
+        if level == "RED" and outflow and registry and str(outflow) in registry:
+            dst = _resolve_lake_label(str(outflow), registry)
+            recs.append(f"Усилить мониторинг нижележащего звена каскада ({dst})")
+    return recs
+
+
+def enrich_verdict_with_stubs(
+    level: str,
+    chl: float,
+    *,
+    threshold_ug_l: float = 25.0,
+    base_reasons: Optional[List[str]] = None,
+    bloom_prob: Optional[float] = None,
+    attention_prob: Optional[float] = None,
+    temp14: Optional[float] = None,
+    calm7: Optional[float] = None,
+    lake_meta: Optional[dict] = None,
+    registry: Optional[Dict[str, dict]] = None,
+) -> AlertVerdict:
+    """Объединяет 2-уровневый вердикт (GREEN/RED) с модульными заглушками расширенной аналитики.
+    Когда Часть 3 перенесёт соответствующие правила в RDF/SPARQL, достаточно заменить отдельные хуки."""
+    attention_ug_l = float((lake_meta or {}).get("attention_ug_l") or 15.0)
+    tsi = carlson_tsi(chl)
+    t_cls = trophic_class(tsi)
+
+    reasons = list(base_reasons or [])
+    reasons.append(f"Индекс Карлсона TSI (заглушка): {tsi:.1f} ({t_cls})")
+    reasons.extend(
+        stub_attention_and_prob_reasons(chl, level, threshold_ug_l, attention_ug_l, bloom_prob, attention_prob)
+    )
+    reasons.extend(stub_meteo_reasons(temp14, calm7))
+    reasons.extend(stub_morphometry_and_cascade_reasons(level, chl, attention_ug_l, lake_meta, registry))
+    recs = stub_recommendations(level, chl, attention_ug_l, lake_meta, registry)
+    return AlertVerdict(level, tsi, t_cls, reasons, recs)
+
+
+class StubGraphEngine:
+    """2-уровневая заглушка графа знаний (GREEN / RED по порогу 25 мкг/л + заглушки доп. правил)."""
+
+    threshold_ug_l: float = 25.0
+
+    def assess(
+        self,
+        wb_id: str,
+        wb_name: str,
+        d: date,
+        chl: float,
+        prob: Optional[float],
+        temp14: Optional[float],
+        calm7: Optional[float],
+        *,
+        attention_prob: Optional[float] = None,
+        lake_meta: Optional[dict] = None,
+        registry: Optional[Dict[str, dict]] = None,
+    ) -> AlertVerdict:
+        meta = lake_meta if lake_meta is not None else WATER_BODIES.get(wb_id)
+        threshold = float((meta or {}).get("bloom_ug_l") or self.threshold_ug_l)
+        if chl >= threshold:
             level = "RED"
-            if chl >= 25: reasons.append(f"Прогноз хлорофилла-a {chl} мкг/л превышает порог 25 мкг/л")
-            if prob >= 0.5: reasons.append(f"Вероятность цветения {prob:.0%} (порог 50%)")
-        elif 15 <= chl < 25 or hot_calm:
-            level = "YELLOW"
-            if 15 <= chl < 25: reasons.append(f"Прогноз хлорофилла-a {chl} мкг/л в диапазоне 15-25 мкг/л")
-            if hot_calm: reasons.append(f"Тепло-штилевой режим: T14={temp14} °C, доля штиля {calm7:.0%}")
+            base = [f"Прогноз хлорофилла-a {chl:.1f} мкг/л ≥ порога предупреждения {threshold:g} мкг/л"]
         else:
             level = "GREEN"
-            reasons.append("Показатели в пределах нормы")
-        if level == "RED":
-            recs = ["Усилить отбор проб воды", "Проверить цианотоксины", "Уведомить Минприроды",
-                    "Рассмотреть ограничение купания"]
-        elif level == "YELLOW":
-            recs = ["Усилить наблюдение", "Запланировать внеочередной отбор проб"]
-        else:
-            recs = ["Плановый мониторинг"]
-        tsi = carlson_tsi(chl)
-        return AlertVerdict(level, tsi, trophic_class(tsi), reasons, recs)
+            base = [f"Прогноз хлорофилла-a {chl:.1f} мкг/л < порога предупреждения {threshold:g} мкг/л (норма)"]
+        return enrich_verdict_with_stubs(
+            level,
+            chl,
+            threshold_ug_l=threshold,
+            base_reasons=base,
+            bloom_prob=prob,
+            attention_prob=attention_prob,
+            temp14=temp14,
+            calm7=calm7,
+            lake_meta=meta,
+            registry=registry,
+        )
 
 
 STUB_METRICS = {"note": "заглушка", "regression": {"rmse": None, "mae": None, "r2": None},

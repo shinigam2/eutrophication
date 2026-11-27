@@ -20,6 +20,10 @@ def test_stub_contract():
                 continue
             chl, prob = m.predict(f)
             v = e.assess(wb, "name", d, chl, prob, f["temp_mean_14d"], f["calm_fraction_7d"])
+            assert v.alert_level in ("GREEN", "RED"), f"ожидались 2 уровня GREEN/RED, получено {v.alert_level}"
+            assert v.reasons and v.recommendations
+            if wb == "naroch":
+                assert any("альгицид" in r.lower() for r in v.recommendations)
             print(f"{wb:11} {d} now={f['chl_a_current']:5} -> {chl:5} P={prob:.2f} "
                   f"{v.alert_level:6} {v.trophic_class}")
     for mode in ("satellite", "lab"):

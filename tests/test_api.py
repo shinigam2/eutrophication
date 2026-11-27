@@ -30,17 +30,28 @@ def test_all():
         for ep in ("/lakes", "/timeline", "/predict/", "/history/", "/metrics", "/lab/upload"):
             assert ep in js.text, ep
 
-        # линия времени: декады, годы и снимки по всем водоёмам
+        # линия времени: декады, годы и снимки по всем водоёмам (строго 2 уровня тревоги: GREEN / RED)
         tl = c.get("/timeline").json()
         assert tl["mode"] == "satellite" and tl["dates"] and tl["years"]
         assert tl["default_date"] in tl["snapshots"]
         assert "naroch" in tl["snapshots"][tl["default_date"]]
+        all_alerts = {
+            snap.get("a")
+            for day in tl["snapshots"].values()
+            for snap in day.values()
+            if snap.get("a") is not None
+        }
+        assert all_alerts <= {"GREEN", "RED"}, f"ожидалось 2 уровня GREEN/RED, получено: {all_alerts}"
         tl_lab = c.get("/timeline", params={"mode": "lab"}).json()
         assert tl_lab["mode"] == "lab" and tl_lab["dates"]
         assert c.get("/timeline", params={"mode": "bogus"}).status_code == 422
 
-        assert c.get("/predict/zaslavskoe", params={"date": "2025-07-11"}).json()["alert_level"] == "RED"
-        assert c.get("/predict/naroch", params={"date": "2025-07-11"}).json()["alert_level"] == "YELLOW"
+        z = c.get("/predict/zaslavskoe", params={"date": "2025-07-11"}).json()
+        assert z["alert_level"] == "RED"
+        n_jul = c.get("/predict/naroch", params={"date": "2025-07-11"}).json()
+        assert n_jul["alert_level"] == "GREEN"   # 2 уровня: <25 мкг/л -> GREEN (без YELLOW)
+        assert n_jul["trophic_index"] is not None and n_jul["trophic_class"]
+        assert any("альгицид" in rec.lower() for rec in n_jul["recommendations"])
         r = c.get("/predict/naroch", params={"date": "2025-05-21"}).json()
         assert r["alert_level"] == "GREEN" and r["obs_status"] == "valid"
         assert r["mode"] == "satellite" and r["observation"]["source"].startswith("Демонстрационные")
@@ -138,3 +149,26 @@ def test_registry_filtering_and_geojson_hydration(tmp_path):
     assert reg["active_lake"]["lat"] == 54.85 and reg["active_lake"]["lon"] == 26.78
     assert reg["active_lake"]["bbox"]["min_lon"] == 26.7
     assert reg["active_lake"]["geometry"]["type"] == "Polygon"
+
+
+def test_api_real_repo_part3_connected():
+    """На реальном корне репозитория FastAPI подключает Части 1 и 3 (graph_cli + graph.ttl)."""
+    from pathlib import Path
+    repo_root = Path(__file__).resolve().parents[1]
+    old_root = os.environ.get("PROJECT_ROOT")
+    try:
+        os.environ["PROJECT_ROOT"] = str(repo_root)
+        with TestClient(app) as c:
+            root_info = c.get("/").json()
+            assert root_info["components"]["part1"].startswith("реальная:")
+            assert root_info["components"]["part3"].startswith("реальная: src.knowledge_graph.graph_cli")
+            lakes = {w["id"]: w for w in c.get("/lakes").json()}
+            assert {"naroch", "myastro", "batorino"} <= set(lakes)
+            assert lakes["batorino"]["protected_area"] and lakes["batorino"]["chemical_treatment_allowed"] is False
+            assert lakes["batorino"]["cascade_outflow_to"] == "myastro"
+            assert lakes["batorino"]["attention_ug_l"] == 15.0 and lakes["batorino"]["bloom_ug_l"] == 25.0
+    finally:
+        if old_root is None:
+            os.environ.pop("PROJECT_ROOT", None)
+        else:
+            os.environ["PROJECT_ROOT"] = old_root

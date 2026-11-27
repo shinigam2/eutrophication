@@ -411,19 +411,18 @@
       };
     }
 
-    // Thematic layer 1 (default): Chlorophyll-a & SanPiN/WHO Risk (with smooth color gradient!)
-    const attThr = (lake && lake.attention_ug_l) || 15;
+    // Thematic layer 1 (default): Chlorophyll-a & 2-level risk (GREEN < 25 / RED >= 25, matching Part 3)
     const bloomThr = (lake && lake.bloom_ug_l) || 25;
 
     if (snap.a) {
       const val = snap.f != null ? Number(snap.f) : (snap.c != null ? Number(snap.c) : null);
       const shortVal = val != null ? `${prefix}${val.toFixed(1)}` : '—';
-      const color = val != null ? lerpRamp(val, CHL_STOPS) : (snap.a === 'RED' ? '#fb7185' : snap.a === 'YELLOW' ? '#fbbf24' : '#34d399');
+      const color = val != null ? lerpRamp(val, CHL_STOPS) : (snap.a === 'RED' ? '#fb7185' : '#34d399');
       if (snap.a === 'RED') {
         return {
           color: '#fb7185',
           badgeClass: 'badge-eutro',
-          statusLabel: 'Опасность (прогноз)',
+          statusLabel: `Предупреждение (прогноз ≥${bloomThr})`,
           shortVal,
           trend,
           delta: dc,
@@ -432,23 +431,10 @@
           isForecast: true,
         };
       }
-      if (snap.a === 'YELLOW') {
-        return {
-          color: '#fbbf24',
-          badgeClass: 'badge-warn',
-          statusLabel: 'Внимание (прогноз)',
-          shortVal,
-          trend,
-          delta: dc,
-          category: 'yellow',
-          sortScore: 500 + (val || 0),
-          isForecast: true,
-        };
-      }
       return {
         color,
         badgeClass: 'badge-meso',
-        statusLabel: 'Норма (прогноз)',
+        statusLabel: `Норма (прогноз <${bloomThr})`,
         shortVal,
         trend,
         delta: dc,
@@ -479,7 +465,7 @@
       return {
         color,
         badgeClass: 'badge-eutro',
-        statusLabel: 'Цветение (факт ≥25)',
+        statusLabel: `Предупреждение (факт ≥${bloomThr})`,
         shortVal,
         trend,
         delta: dc,
@@ -488,24 +474,11 @@
         isForecast: false,
       };
     }
-    if (c >= attThr) {
-      return {
-        color,
-        badgeClass: 'badge-warn',
-        statusLabel: 'Внимание (факт 15–25)',
-        shortVal,
-        trend,
-        delta: dc,
-        category: 'yellow',
-        sortScore: 500 + c,
-        isForecast: false,
-      };
-    }
     if (c < 5) {
       return {
         color,
         badgeClass: 'badge-oligo',
-        statusLabel: 'Чистая вода (факт <5)',
+        statusLabel: 'Норма · чистая вода (<5)',
         shortVal,
         trend,
         delta: dc,
@@ -517,7 +490,7 @@
     return {
       color,
       badgeClass: 'badge-meso',
-      statusLabel: 'Норма (факт <15)',
+      statusLabel: `Норма (факт <${bloomThr})`,
       shortVal,
       trend,
       delta: dc,
@@ -1252,11 +1225,10 @@
         { color: '#64748b', label: 'Лёд / Облака', count: (counts.ice || 0) + (counts.nodata || 0) },
       ];
     } else {
-      if (titleEl) titleEl.textContent = S.timeline && S.timeline.has_forecast ? 'Прогноз риска (+10д)' : 'Хлорофилл-а (СанПиН)';
+      if (titleEl) titleEl.textContent = S.timeline && S.timeline.has_forecast ? 'Прогноз риска (+10д)' : 'Хлорофилл-а (2 уровня)';
       rows = [
-        { color: '#34d399', label: 'Норма (< 15 мкг/л)', count: counts.green || 0 },
-        { color: '#fbbf24', label: 'Внимание (15–25)', count: counts.yellow || 0 },
-        { color: '#fb7185', label: 'Опасность (≥ 25)', count: counts.red || 0 },
+        { color: '#34d399', label: 'Норма (< 25 мкг/л)', count: counts.green || 0 },
+        { color: '#fb7185', label: 'Предупреждение (≥ 25)', count: counts.red || 0 },
         { color: '#93c5fd', label: 'Ледяной покров', count: counts.ice || 0 },
         { color: '#64748b', label: 'Облака / нет данных', count: counts.nodata || 0 },
       ];
@@ -1574,14 +1546,19 @@
         ? `Диапазон ±MAE (${fmtNum(p.uncertainty_ug_l, 1)}): ${fmtNum(p.pred_low_ug_l, 1)} – ${fmtNum(p.pred_high_ug_l, 1)} мкг/л`
         : 'Интервал ±MAE будет показан после подключения model_metrics.json';
       const probPct = p.bloom_probability != null ? Math.round(p.bloom_probability * 100) : null;
-      const probColor = probPct != null && probPct >= 50 ? '#fb7185' : probPct != null && probPct >= 25 ? '#fbbf24' : '#34d399';
+      const attPct = p.attention_probability != null ? Math.round(p.attention_probability * 100) : null;
+      const probColor = (p.alert_level === 'RED' || (probPct != null && probPct >= 50)) ? '#fb7185' : '#34d399';
+      const probMeta = [
+        probPct != null ? `P(≥25) = ${probPct}%` : '',
+        attPct != null ? `P(≥15) = ${attPct}%` : '',
+      ].filter(Boolean).join(' · ');
       forecastHtml =
         `<div class="section-block">` +
         `<div class="section-label">Прогноз на +${p.horizon_days || 10} дней</div>` +
         `<div class="forecast-card">` +
         `<div class="forecast-row">` +
         `<span class="forecast-val" style="color:${probColor}">${fmtNum(p.chl_a_forecast, 1, ' мкг/л')}</span>` +
-        `<span class="forecast-meta">${probPct != null ? `P(цветение ≥25) = ${probPct}%` : ''}</span>` +
+        `<span class="forecast-meta">${esc(probMeta)}</span>` +
         `</div>` +
         `${probPct != null ? `<div class="prob-bar-track"><div class="prob-bar-fill" style="width:${probPct}%;background:${probColor}"></div></div>` : ''}` +
         `<div class="forecast-meta">${esc(interval)}</div>` +
@@ -2153,7 +2130,13 @@
       return;
     }
     const p1Real = String(comps.part1 || '').startsWith('реальная');
-    if (p1Real) {
+    const p2Real = String(comps.part2 || '').startsWith('реальная');
+    const p3Real = String(comps.part3 || '').startsWith('реальная');
+    if (p1Real && p3Real && !p2Real) {
+      stubText.textContent = `Часть 1 (данные, ${S.lakes.length} озёр) и Часть 3 (граф знаний, 2 уровня) подключены. Модели прогноза (+10д, Часть 2) ещё не подключены — показан факт Sentinel-2.`;
+    } else if (p1Real && p2Real && !p3Real) {
+      stubText.textContent = `Часть 1 (${S.lakes.length} озёр) и Часть 2 (модели +10д) подключены. Граф знаний (Часть 3) работает в режиме заглушки.`;
+    } else if (p1Real) {
       stubText.textContent = `Часть 1: реальные данные (${S.lakes.length} озёр, 2018–2026). Модели прогноза (+10д) и граф знаний ещё не подключены — показан факт Sentinel-2.`;
     } else {
       stubText.textContent = 'Демонстрационный режим (заглушки): реальные витрины и модели не найдены.';

@@ -36,7 +36,7 @@ def make_project(root: Path):
 
 def fake_engine_module():
     class Lvl(enum.Enum):
-        GREEN = 1; YELLOW = 2; RED = 3
+        GREEN = 1; RED = 2
 
     @dataclasses.dataclass
     class V:                                   # другие имена полей, чем у нас — адаптер должен справиться
@@ -210,6 +210,195 @@ def test_contract():
     print("OK (contract)")
 
 
+def test_part3_graph_cli_integration():
+    """Реальная стыковка Части 4 с Частью 3 (src/knowledge_graph/graph_cli.py + graph.ttl + Oxigraph),
+    строго 2 уровня (GREEN / RED) и сохранённые заглушки ООПТ / каскада / метео / TSI / рекомендаций."""
+    import shutil
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from src.api import adapters, pipeline
+    from src.api.schemas import AlertLevel
+
+    assert {lvl.value for lvl in AlertLevel} == {"GREEN", "RED"}
+
+    # Проверка to_verdict: 2 уровня + маппинг статусов Части 3 (warning / below_threshold), YELLOW запрещён
+    assert adapters.to_verdict({"alertStatus": "warning"}).alert_level == "RED"
+    assert adapters.to_verdict({"alertStatus": "below_threshold"}).alert_level == "GREEN"
+    try:
+        adapters.to_verdict({"alert_level": "YELLOW"})
+        raise AssertionError("YELLOW больше не должен приниматься")
+    except adapters.IntegrationError:
+        pass
+
+    repo_ttl = Path(__file__).resolve().parents[1] / "data/knowledge_graph/graph.ttl"
+    assert repo_ttl.is_file(), f"не найден {repo_ttl}"
+
+    old_root = os.environ.get("PROJECT_ROOT")
+    old_oxi = os.environ.get("OXIGRAPH_URL")
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            os.environ["PROJECT_ROOT"] = tmp
+            os.environ.pop("OXIGRAPH_URL", None)
+            os.environ.pop("WATER_OXIGRAPH_URL", None)
+            os.environ.pop("WATER_ENGINE_MODULE", None)
+            sys.modules.pop("src.knowledge_graph.graph_engine", None)
+
+            _contract_project(root, lakes=("batorino", "myastro", "naroch"))
+            # Добавляем реальный ecological_context Части 1 (ООПТ, запрет альгицидов, каскад, стратификация, пороги)
+            (root / "configs/water_bodies.yaml").write_text(
+                "pipeline:\n  default_thresholds: {attention_ug_l: 15.0, bloom_ug_l: 25.0}\n"
+                "water_bodies:\n"
+                "  - id: batorino\n    name_ru: Озеро Баторино\n    center_lat: 54.84\n    center_lon: 26.96\n"
+                "    area_km2: 6.25\n    mean_depth_m: 2.4\n"
+                "    ecological_context:\n"
+                "      protected_area: ГПУ «Национальный парк Нарочанский» (ООПТ)\n"
+                "      chemical_treatment_allowed: false\n"
+                "      stratification_type: polymictic_shallow\n"
+                "      cascade_inflow_from: []\n"
+                "      cascade_outflow_to: myastro\n"
+                "  - id: myastro\n    name_ru: Озеро Мястро\n    center_lat: 54.86\n    center_lon: 26.88\n"
+                "    area_km2: 13.1\n    mean_depth_m: 5.4\n"
+                "    ecological_context:\n"
+                "      protected_area: ГПУ «Национальный парк Нарочанский» (ООПТ)\n"
+                "      chemical_treatment_allowed: false\n"
+                "      stratification_type: weakly_stratified\n"
+                "      cascade_inflow_from: [batorino]\n"
+                "      cascade_outflow_to: naroch\n"
+                "  - id: naroch\n    name_ru: Озеро Нарочь\n    center_lat: 54.85\n    center_lon: 26.77\n"
+                "    area_km2: 79.6\n    mean_depth_m: 8.9\n"
+                "    ecological_context:\n"
+                "      protected_area: ГПУ «Национальный парк Нарочанский» (ООПТ)\n"
+                "      chemical_treatment_allowed: false\n"
+                "      stratification_type: dimictic_deep\n"
+                "      cascade_inflow_from: [myastro]\n"
+                "      cascade_outflow_to: р. Нарочанка\n",
+                encoding="utf-8",
+            )
+            (root / "data/knowledge_graph").mkdir(parents=True, exist_ok=True)
+            ttl_copy = root / "data/knowledge_graph/graph.ttl"
+            shutil.copy2(repo_ttl, ttl_copy)
+
+            c = pipeline.build_components()
+            assert c["stub_parts"] == [], c["status"]
+            assert isinstance(c["engine"], adapters.GraphCliEngine), c["status"]
+            assert c["status"]["part3"].startswith("реальная: src.knowledge_graph.graph_cli")
+            assert c["engine"].threshold_ug_l == 25.0
+
+            eng = c["engine"]
+            bat = c["registry"]["batorino"]
+            reg = c["registry"]
+
+            # 1) Проверка бинарных порогов (10 -> GREEN, 18 -> GREEN + ориентир 15, 25 -> RED, 35 -> RED)
+            v10 = eng.assess("batorino", bat["name"], date(2025, 7, 11), 10.0, 0.05, 19.0, 0.2,
+                             attention_prob=0.1, lake_meta=bat, registry=reg)
+            v18 = eng.assess("batorino", bat["name"], date(2025, 7, 11), 18.0, 0.35, 22.5, 0.45,
+                             attention_prob=0.68, lake_meta=bat, registry=reg)
+            v25 = eng.assess("batorino", bat["name"], date(2025, 7, 11), 25.0, 0.55, 23.0, 0.50,
+                             attention_prob=0.85, lake_meta=bat, registry=reg)
+            v35 = eng.assess("batorino", bat["name"], date(2025, 7, 11), 35.0, 0.90, 24.0, 0.60,
+                             attention_prob=0.98, lake_meta=bat, registry=reg)
+            # Повторный вызов на ту же дату с другим chl (иммунитет к FILTER(!BOUND(?existing)) Части 3!)
+            v8 = eng.assess("batorino", bat["name"], date(2025, 7, 11), 8.0, 0.02, 16.0, 0.10,
+                            lake_meta=bat, registry=reg)
+
+            assert v10.alert_level == "GREEN"
+            assert v18.alert_level == "GREEN"   # строго 2 уровня, НЕ YELLOW!
+            assert v25.alert_level == "RED"
+            assert v35.alert_level == "RED"
+            assert v8.alert_level == "GREEN"
+
+            # 2) Проверка ВСЕХ сохранённых заглушек (ООПТ, запрет альгицидов, каскад, стратификация, 15 мкг/л, метео, вероятности, TSI)
+            joined_18 = " | ".join(v18.reasons)
+            assert "Граф знаний (Часть 3" in v18.reasons[0] and "below_threshold" in v18.reasons[0]
+            assert "15 мкг/л" in joined_18 and "68%" in joined_18
+            assert "T14=22.5" in joined_18 and "45%" in joined_18
+            assert "полимиктическое" in joined_18 and "2.4 м" in joined_18
+            assert "Озеро Мястро" in joined_18
+            assert v18.trophic_index > 55 and v18.trophic_class == "эвтрофный"
+            assert any("альгицид" in r.lower() and "нарочанский" in r.lower() for r in v18.recommendations)
+
+            assert "warning" in v35.reasons[0]
+            assert any("Озеро Мястро" in r for r in v35.recommendations)  # каскадное предупреждение ниже по стоку
+            assert any("альгицид" in r.lower() for r in v35.recommendations)
+
+            # 3) Недекадные даты (лабораторный режим) безопасно нормализуются к 1/11/21
+            for d_raw in (date(2018, 7, 15), date(2025, 8, 5), date(2025, 8, 29)):
+                vd = eng.assess("naroch", "Озеро Нарочь", d_raw, 26.0, 0.7, 21.0, 0.4, lake_meta=reg["naroch"], registry=reg)
+                assert vd.alert_level == "RED"
+
+            # 4) Изменение порога в graph.ttl (25 -> 30) реально меняет решение SPARQL-графа!
+            ttl_copy.write_text(ttl_copy.read_text(encoding="utf-8").replace("thresholdUgL 25", "thresholdUgL 30"), encoding="utf-8")
+            eng30 = adapters.GraphCliEngine("src.knowledge_graph.graph_cli", ttl_copy)
+            assert eng30.threshold_ug_l == 30.0
+            assert eng30.assess("batorino", "Озеро Баторино", date(2025, 7, 11), 27.0, 0.4, 20.0, 0.3).alert_level == "GREEN"
+            assert eng30.assess("batorino", "Озеро Баторино", date(2025, 7, 11), 31.0, 0.8, 20.0, 0.3).alert_level == "RED"
+
+            # 5) Недоступный Oxigraph -> плавный fallback на локальный rdflib без падения
+            eng_offline = adapters.GraphCliEngine("src.knowledge_graph.graph_cli", repo_ttl, oxigraph_url="http://127.0.0.1:1")
+            assert eng_offline.assess("naroch", "Озеро Нарочь", date(2025, 7, 11), 28.0, 0.7, 21.0, 0.4).alert_level == "RED"
+
+            # 6) Доступный Oxigraph (mock HTTP /query) -> вердикт читается напрямую из Oxigraph
+            class _MockOxi(BaseHTTPRequestHandler):
+                def log_message(self, *a): pass
+                def do_POST(self):
+                    n = int(self.headers.get("Content-Length") or 0)
+                    _ = self.rfile.read(n)
+                    payload = json.dumps({
+                        "head": {"vars": ["waterBodyId", "waterBody", "periodStart", "periodEnd",
+                                          "predictedUgL", "thresholdUgL", "alertStatus", "observedUgL", "obsStatus"]},
+                        "results": {"bindings": [{
+                            "waterBodyId": {"type": "literal", "value": "naroch"},
+                            "waterBody": {"type": "literal", "value": "Озеро Нарочь"},
+                            "periodStart": {"type": "literal", "value": "2025-07-11"},
+                            "periodEnd": {"type": "literal", "value": "2025-07-20"},
+                            "predictedUgL": {"type": "literal", "value": "28.0"},
+                            "thresholdUgL": {"type": "literal", "value": "25.0"},
+                            "alertStatus": {"type": "literal", "value": "warning"},
+                        }]},
+                    }).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/sparql-results+json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+
+            srv = HTTPServer(("127.0.0.1", 0), _MockOxi)
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+            try:
+                eng_oxi = adapters.GraphCliEngine(
+                    "src.knowledge_graph.graph_cli", repo_ttl,
+                    oxigraph_url=f"http://127.0.0.1:{srv.server_port}",
+                )
+                v_oxi = eng_oxi.assess("naroch", "Озеро Нарочь", date(2025, 7, 11), 28.0, 0.7, 21.0, 0.4)
+                assert v_oxi.alert_level == "RED" and "Oxigraph" in v_oxi.reasons[0]
+            finally:
+                srv.shutdown()
+
+            # 7) Полный сквозной прогон run_pipeline() и timeline() с реальной Частью 3
+            res = pipeline.run_pipeline(c, "batorino", date(2025, 7, 11))
+            assert res["alert_level"] in ("GREEN", "RED")
+            assert any("graph_cli" in s for s in res["sources"])
+            assert any("заглушки Части 4" in n for n in res["notes"])
+            tl = pipeline.timeline(c, "satellite")
+            tl_alerts = {
+                s.get("a") for day in tl["snapshots"].values() for s in day.values() if s.get("a") is not None
+            }
+            assert tl_alerts <= {"GREEN", "RED"}
+    finally:
+        if old_root is None:
+            os.environ.pop("PROJECT_ROOT", None)
+        else:
+            os.environ["PROJECT_ROOT"] = old_root
+        if old_oxi is None:
+            os.environ.pop("OXIGRAPH_URL", None)
+        else:
+            os.environ["OXIGRAPH_URL"] = old_oxi
+    print("OK (part3 graph_cli)")
+
+
 if __name__ == "__main__":
     test_all()
     test_contract()
+    test_part3_graph_cli_integration()

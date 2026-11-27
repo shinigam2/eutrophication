@@ -233,6 +233,9 @@ const hlog = () => J('/__hlog');
   window.__dash.setTheme('coverage');
   assert(get('#legendTitle').textContent.includes('Покрытие'));
   window.__dash.setTheme('chl');
+  assert(get('#legendItems').innerHTML.includes('Норма (&lt; 25 мкг/л)') || get('#legendItems').innerHTML.includes('Норма (< 25 мкг/л)'));
+  assert(get('#legendItems').innerHTML.includes('Предупреждение (≥ 25)'));
+  assert(!get('#legendItems').innerHTML.includes('Внимание (15–25)'), '3-й уровень Внимание (YELLOW) должен быть убран');
 
   window.__dash.cycleSpeed();
   assert.strictEqual(get('#speedBtn').textContent, '2×');
