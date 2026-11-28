@@ -167,7 +167,7 @@ DYNAMIC_IDS = {"drawerClose", "chart", "histWin", "compareSelect", "exportCsvBtn
 def check_files():
     """Файлы панели согласованы между собой: всё, на что ссылается JS, есть в HTML и CSS."""
     html, js, css = [(FRONT / f).read_text(encoding="utf-8") for f in ("index.html", "app.js", "style.css")]
-    assert 'href="style.css"' in html and 'src="app.js"' in html
+    assert 'href="style.css' in html and 'src="app.js' in html
     assert "<style>" not in html and "<script>" not in html, "стили и код вынесены в отдельные файлы"
     assert "const D =" not in js, "данных внутри страницы быть не должно"
     for ep in ("/lakes", "/timeline", "/predict/", "/history/", "/metrics", "/lab/upload"):

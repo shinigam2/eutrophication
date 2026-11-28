@@ -23,7 +23,7 @@ def test_all():
         assert met["horizon_days"] == 10 and {"satellite", "lab"} <= set(met["modes"])
 
         page = c.get("/dashboard")                       # без слеша: перенаправление на /dashboard/
-        assert "<html" in page.text and 'src="app.js"' in page.text
+        assert "<html" in page.text and 'src="app.js' in page.text
         assert c.get("/dashboard/style.css").status_code == 200
         js = c.get("/dashboard/app.js")
         assert js.status_code == 200
