@@ -52,6 +52,15 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "P
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
+@app.middleware("http")
+async def _no_cache_dashboard(request: Request, call_next):
+    """Запрещает браузеру отдавать устаревшие app.js/style.css без проверки ETag."""
+    response = await call_next(request)
+    if request.url.path.startswith("/dashboard"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 @app.get("/")
 def root(request: Request):
     c = comps(request)
