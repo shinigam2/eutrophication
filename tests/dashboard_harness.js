@@ -206,12 +206,20 @@ const hlog = () => J('/__hlog');
   assert(mapState.styleOpts.every((o) => o.diff === false), 'setStyle всегда вызывается с { diff: false }');
 
   // 3. Клик по озеру: selected-lake заполняется полигоном, drawer открывается, flyTo срабатывает
+  const activeDate = window.__dash.state.date;
+  const zasSnap = window.__dash.state.timeline.snapshots[activeDate].zaslavskoe;
+  assert.strictEqual(
+    mapState.markers[0].el.children[1].textContent,
+    Number(zasSnap.c).toFixed(1),
+    'на карте должно отображаться фактическое значение Chl-a (snap.c), а не прогноз +10д',
+  );
   await window.__dash.selectLake('zaslavskoe');
   await sleep(60);
   assert.strictEqual(get('#panel').hidden, false);
   assert.strictEqual(mapState.sources['selected-lake'].data.features.length, 1, 'выделена площадь выбранного озера');
   assert.strictEqual(mapState.sources['selected-lake'].data.features[0].properties.id, 'zaslavskoe');
   assert(get('#panelHeader').innerHTML.includes('Заславское'));
+  assert(get('#panelHeader').innerHTML.includes('Факт Sentinel-2'), 'шапка карточки должна показывать факт на выбранную дату');
   assert(get('#panelBody').innerHTML.includes('Прогноз на +10 дней'));
   assert(get('#panelBody').innerHTML.includes('±MAE'));
   assert(mapState.flyCalls.length >= 1, 'камера выполнила flyTo к озеру');
@@ -233,6 +241,7 @@ const hlog = () => J('/__hlog');
   window.__dash.setTheme('coverage');
   assert(get('#legendTitle').textContent.includes('Покрытие'));
   window.__dash.setTheme('chl');
+  assert(get('#legendTitle').textContent.includes('факт'), 'легенда карты Chl-a должна обозначать фактические значения');
   assert(get('#legendItems').innerHTML.includes('Норма (&lt; 25 мкг/л)') || get('#legendItems').innerHTML.includes('Норма (< 25 мкг/л)'));
   assert(get('#legendItems').innerHTML.includes('Предупреждение (≥ 25)'));
   assert(!get('#legendItems').innerHTML.includes('Внимание (15–25)'), '3-й уровень Внимание (YELLOW) должен быть убран');

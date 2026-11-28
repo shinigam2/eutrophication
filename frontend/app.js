@@ -375,7 +375,7 @@
       };
     }
 
-    // Thematic layer 2: Carlson Trophic State Index (TSI)
+    // Thematic layer 2: Carlson Trophic State Index (TSI, factual on selected date)
     if (S.theme === 'tsi') {
       const tsi = snap.t != null ? Number(snap.t) : null;
       if (tsi == null) {
@@ -391,13 +391,12 @@
           isForecast: false,
         };
       }
-      let statusLabel = 'Эвтрофное (TSI 60–70)';
-      let badgeClass = 'badge-eutro';
+      let statusLabel = 'Эвтрофное (50–70)';
+      let badgeClass = 'badge-warn';
       let category = 'eutro';
       if (tsi < 40) { statusLabel = 'Олиготрофное (<40)'; badgeClass = 'badge-oligo'; category = 'oligo'; }
       else if (tsi < 50) { statusLabel = 'Мезотрофное (40–50)'; badgeClass = 'badge-meso'; category = 'meso'; }
-      else if (tsi < 60) { statusLabel = 'Умер. эвтрофное (50–60)'; badgeClass = 'badge-warn'; category = 'meso_eu'; }
-      else if (tsi >= 70) { statusLabel = 'Гиперэвтрофное (≥70)'; badgeClass = 'badge-eutro'; category = 'eutro'; }
+      else if (tsi >= 70) { statusLabel = 'Гиперэвтрофное (≥70)'; badgeClass = 'badge-eutro'; category = 'hyper'; }
       return {
         color: lerpRamp(tsi, TSI_STOPS),
         badgeClass,
@@ -411,38 +410,8 @@
       };
     }
 
-    // Thematic layer 1 (default): Chlorophyll-a & 2-level risk (GREEN < 25 / RED >= 25, matching Part 3)
+    // Thematic layer 1 (default): Factual Chlorophyll-a on selected date (forecast +10d is shown in lake drawer)
     const bloomThr = (lake && lake.bloom_ug_l) || 25;
-
-    if (snap.a) {
-      const val = snap.f != null ? Number(snap.f) : (snap.c != null ? Number(snap.c) : null);
-      const shortVal = val != null ? `${prefix}${val.toFixed(1)}` : '—';
-      const color = val != null ? lerpRamp(val, CHL_STOPS) : (snap.a === 'RED' ? '#fb7185' : '#34d399');
-      if (snap.a === 'RED') {
-        return {
-          color: '#fb7185',
-          badgeClass: 'badge-eutro',
-          statusLabel: `Предупреждение (прогноз ≥${bloomThr})`,
-          shortVal,
-          trend,
-          delta: dc,
-          category: 'red',
-          sortScore: 1000 + (val || 0),
-          isForecast: true,
-        };
-      }
-      return {
-        color,
-        badgeClass: 'badge-meso',
-        statusLabel: `Норма (прогноз <${bloomThr})`,
-        shortVal,
-        trend,
-        delta: dc,
-        category: 'green',
-        sortScore: val || 0,
-        isForecast: true,
-      };
-    }
 
     if (snap.c == null) {
       return {
@@ -1207,12 +1176,12 @@
     const titleEl = $('#legendTitle');
     let rows = [];
     if (S.theme === 'tsi') {
-      if (titleEl) titleEl.textContent = 'Трофность (TSI Карлсона)';
+      if (titleEl) titleEl.textContent = 'Трофность (TSI, факт)';
       rows = [
         { color: '#22d3ee', label: 'Олиготрофное (< 40)', count: counts.oligo || 0 },
         { color: '#34d399', label: 'Мезотрофное (40–50)', count: counts.meso || 0 },
-        { color: '#fbbf24', label: 'Умер. эвтрофное (50–60)', count: counts.meso_eu || 0 },
-        { color: '#fb7185', label: 'Эвтрофное (≥ 60)', count: counts.eutro || 0 },
+        { color: '#fbbf24', label: 'Эвтрофное (50–70)', count: counts.eutro || 0 },
+        { color: '#fb7185', label: 'Гиперэвтрофное (≥ 70)', count: counts.hyper || 0 },
         { color: '#93c5fd', label: 'Лёд / Облака', count: (counts.ice || 0) + (counts.nodata || 0) },
       ];
     } else if (S.theme === 'coverage') {
@@ -1225,7 +1194,7 @@
         { color: '#64748b', label: 'Лёд / Облака', count: (counts.ice || 0) + (counts.nodata || 0) },
       ];
     } else {
-      if (titleEl) titleEl.textContent = S.timeline && S.timeline.has_forecast ? 'Прогноз риска (+10д)' : 'Хлорофилл-а (2 уровня)';
+      if (titleEl) titleEl.textContent = S.mode === 'lab' ? 'Хлорофилл-а (лаб., факт)' : 'Хлорофилл-а (факт, мкг/л)';
       rows = [
         { color: '#34d399', label: 'Норма (< 25 мкг/л)', count: counts.green || 0 },
         { color: '#fb7185', label: 'Предупреждение (≥ 25)', count: counts.red || 0 },
@@ -1444,22 +1413,16 @@
     const ev = evalSnapshot(lake, snap);
 
     const hasFc = Boolean(pred && pred.chl_a_forecast != null);
-    const chlMain = hasFc
-      ? pred.chl_a_forecast
-      : (pred && pred.chl_a_current != null ? pred.chl_a_current : (snap ? snap.c : null));
-    const mainLabel = hasFc
-      ? `Прогноз +${pred.horizon_days || 10} д от ${fmtDateRu(pred.date_used)}`
-      : `${S.mode === 'lab' ? 'Лаборатория БГУ (факт)' : 'Факт Sentinel-2'} · ${fmtDateRu(pred ? pred.date_used : S.date)}`;
+    const chlMain = pred && pred.chl_a_current != null ? pred.chl_a_current : (snap ? snap.c : null);
+    const mainLabel = `${S.mode === 'lab' ? 'Лаборатория БГУ (факт)' : 'Факт Sentinel-2'} · ${fmtDateRu(pred ? pred.date_used : S.date)}`;
 
-    const tsiVal = pred && pred.trophic_index != null
-      ? pred.trophic_index
-      : (pred && pred.observed_tsi != null ? pred.observed_tsi : (snap ? snap.t : null));
-    const trophicCls = (pred && (pred.trophic_class || pred.observed_trophic_class)) || '';
+    const tsiVal = pred && pred.observed_tsi != null ? pred.observed_tsi : (snap ? snap.t : null);
+    const trophicCls = (pred && pred.observed_trophic_class) || '';
 
     const kpi1Val = hasFc
-      ? fmtNum(pred.chl_a_current, 1, ' мкг/л')
+      ? fmtNum(pred.chl_a_forecast, 1, ' мкг/л')
       : fmtNum(tsiVal, 1);
-    const kpi1Lbl = hasFc ? 'Факт сейчас' : 'Индекс TSI';
+    const kpi1Lbl = hasFc ? `Прогноз +${pred.horizon_days || 10} д` : 'Индекс TSI';
 
     const kpi2Val = pred && pred.bloom_probability != null
       ? `${Math.round(pred.bloom_probability * 100)}%`
@@ -1473,12 +1436,8 @@
     const kpi3Lbl = calmVal != null ? 'Штиль 7 д' : (snap && snap.cov != null ? 'Вода S2' : 'Ср. глубина');
 
     let deltaHtml = '';
-    const deltaVal = (hasFc && pred.chl_a_current != null)
-      ? (Number(pred.chl_a_forecast) - Number(pred.chl_a_current))
-      : (snap && snap.dc != null && snap.c != null ? Number(snap.dc) : null);
-    const deltaTitle = hasFc
-      ? 'Ожидаемое изменение прогноза относительно факта сейчас'
-      : 'Изменение факта к предыдущему наблюдению';
+    const deltaVal = snap && snap.dc != null && snap.c != null ? Number(snap.dc) : null;
+    const deltaTitle = 'Изменение факта к предыдущему наблюдению';
     if (deltaVal != null && Number.isFinite(deltaVal)) {
       const cls = deltaVal >= 0.5 ? 'up' : (deltaVal <= -0.5 ? 'down' : 'flat');
       const arrow = deltaVal >= 0.5 ? '↗' : (deltaVal <= -0.5 ? '↘' : '→');
@@ -1550,24 +1509,40 @@
 
     let forecastHtml = '';
     if (p.chl_a_forecast != null) {
+      const bloomThr = (lake && lake.bloom_ug_l) || 25;
       const interval = (p.pred_low_ug_l != null && p.pred_high_ug_l != null)
         ? `Диапазон ±MAE (${fmtNum(p.uncertainty_ug_l, 1)}): ${fmtNum(p.pred_low_ug_l, 1)} – ${fmtNum(p.pred_high_ug_l, 1)} мкг/л`
         : 'Интервал ±MAE будет показан после подключения model_metrics.json';
       const probPct = p.bloom_probability != null ? Math.round(p.bloom_probability * 100) : null;
       const attPct = p.attention_probability != null ? Math.round(p.attention_probability * 100) : null;
-      const probColor = (p.alert_level === 'RED' || (probPct != null && probPct >= 50)) ? '#fb7185' : '#34d399';
-      const probMeta = [
+      const isRed = p.alert_level === 'RED';
+      const probColor = (isRed || (probPct != null && probPct >= 50)) ? '#fb7185' : '#34d399';
+      const fcBadgeCls = isRed ? 'badge-eutro' : 'badge-meso';
+      const fcBadgeTxt = isRed ? `Предупреждение (≥${bloomThr})` : `Норма (<${bloomThr})`;
+      let fcDeltaHtml = '';
+      if (p.chl_a_current != null) {
+        const fd = Number(p.chl_a_forecast) - Number(p.chl_a_current);
+        if (Number.isFinite(fd)) {
+          const fCls = fd >= 0.5 ? 'up' : (fd <= -0.5 ? 'down' : 'flat');
+          const fArrow = fd >= 0.5 ? '↗' : (fd <= -0.5 ? '↘' : '→');
+          fcDeltaHtml = `<span class="delta-pill ${fCls}" title="Ожидаемое изменение прогноза относительно факта сейчас">${fd > 0 ? '+' : ''}${fd.toFixed(1)} ${fArrow}</span>`;
+        }
+      }
+      const fcMetaParts = [
+        p.trophic_index != null ? `TSI ${Number(p.trophic_index).toFixed(1)}${p.trophic_class ? ` (${p.trophic_class})` : ''}` : '',
         probPct != null ? `P(≥25) = ${probPct}%` : '',
         attPct != null ? `P(≥15) = ${attPct}%` : '',
       ].filter(Boolean).join(' · ');
       forecastHtml =
         `<div class="section-block">` +
-        `<div class="section-label">Прогноз на +${p.horizon_days || 10} дней</div>` +
+        `<div class="section-label">Прогноз на +${p.horizon_days || 10} дней · от ${fmtDateRu(p.date_used)}</div>` +
         `<div class="forecast-card">` +
         `<div class="forecast-row">` +
         `<span class="forecast-val" style="color:${probColor}">${fmtNum(p.chl_a_forecast, 1, ' мкг/л')}</span>` +
-        `<span class="forecast-meta">${esc(probMeta)}</span>` +
+        fcDeltaHtml +
+        `<span class="status-badge ${fcBadgeCls}">${esc(fcBadgeTxt)}</span>` +
         `</div>` +
+        `${fcMetaParts ? `<div class="forecast-meta">${esc(fcMetaParts)}</div>` : ''}` +
         `${probPct != null ? `<div class="prob-bar-track"><div class="prob-bar-fill" style="width:${probPct}%;background:${probColor}"></div></div>` : ''}` +
         `<div class="forecast-meta">${esc(interval)}</div>` +
         `</div></div>`;
