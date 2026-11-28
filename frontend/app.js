@@ -1443,22 +1443,23 @@
     const pred = getFreshPredict(lake.id);
     const ev = evalSnapshot(lake, snap);
 
-    const chlMain = pred && pred.chl_a_forecast != null
+    const hasFc = Boolean(pred && pred.chl_a_forecast != null);
+    const chlMain = hasFc
       ? pred.chl_a_forecast
       : (pred && pred.chl_a_current != null ? pred.chl_a_current : (snap ? snap.c : null));
-    const mainLabel = pred && pred.chl_a_forecast != null
-      ? `Прогноз Chl-a (+${pred.horizon_days || 10} д)`
-      : (S.mode === 'lab' ? 'Лаборатория БГУ (факт)' : 'Факт Sentinel-2');
+    const mainLabel = hasFc
+      ? `Прогноз +${pred.horizon_days || 10} д от ${fmtDateRu(pred.date_used)}`
+      : `${S.mode === 'lab' ? 'Лаборатория БГУ (факт)' : 'Факт Sentinel-2'} · ${fmtDateRu(pred ? pred.date_used : S.date)}`;
 
     const tsiVal = pred && pred.trophic_index != null
       ? pred.trophic_index
       : (pred && pred.observed_tsi != null ? pred.observed_tsi : (snap ? snap.t : null));
     const trophicCls = (pred && (pred.trophic_class || pred.observed_trophic_class)) || '';
 
-    const kpi1Val = pred && pred.chl_a_forecast != null
+    const kpi1Val = hasFc
       ? fmtNum(pred.chl_a_current, 1, ' мкг/л')
       : fmtNum(tsiVal, 1);
-    const kpi1Lbl = pred && pred.chl_a_forecast != null ? 'Факт сейчас' : 'Индекс TSI';
+    const kpi1Lbl = hasFc ? 'Факт сейчас' : 'Индекс TSI';
 
     const kpi2Val = pred && pred.bloom_probability != null
       ? `${Math.round(pred.bloom_probability * 100)}%`
@@ -1472,14 +1473,21 @@
     const kpi3Lbl = calmVal != null ? 'Штиль 7 д' : (snap && snap.cov != null ? 'Вода S2' : 'Ср. глубина');
 
     let deltaHtml = '';
-    if (snap && snap.dc != null && snap.c != null) {
-      const cls = snap.dc >= 0.5 ? 'up' : (snap.dc <= -0.5 ? 'down' : 'flat');
-      const arrow = snap.dc >= 0.5 ? '↗' : (snap.dc <= -0.5 ? '↘' : '→');
-      deltaHtml = `<span class="delta-pill ${cls}" title="Изменение к предыдущему наблюдению">${snap.dc > 0 ? '+' : ''}${snap.dc.toFixed(1)} ${arrow}</span>`;
+    const deltaVal = (hasFc && pred.chl_a_current != null)
+      ? (Number(pred.chl_a_forecast) - Number(pred.chl_a_current))
+      : (snap && snap.dc != null && snap.c != null ? Number(snap.dc) : null);
+    const deltaTitle = hasFc
+      ? 'Ожидаемое изменение прогноза относительно факта сейчас'
+      : 'Изменение факта к предыдущему наблюдению';
+    if (deltaVal != null && Number.isFinite(deltaVal)) {
+      const cls = deltaVal >= 0.5 ? 'up' : (deltaVal <= -0.5 ? 'down' : 'flat');
+      const arrow = deltaVal >= 0.5 ? '↗' : (deltaVal <= -0.5 ? '↘' : '→');
+      deltaHtml = `<span class="delta-pill ${cls}" title="${esc(deltaTitle)}">${deltaVal > 0 ? '+' : ''}${deltaVal.toFixed(1)} ${arrow}</span>`;
     }
 
-    const ooptHtml = lake.protected_area
-      ? `<div class="oopt-pill"><span>ООПТ · ${esc(lake.protected_area)}${lake.chemical_treatment_allowed === false ? ' · Хим. обработка запрещена' : ''}</span></div>`
+    const cleanOopt = lake.protected_area ? String(lake.protected_area).replace(/\s*\(ООПТ\)\s*$/i, '').trim() : '';
+    const ooptHtml = cleanOopt
+      ? `<div class="oopt-pill"><span>ООПТ · ${esc(cleanOopt)}</span></div>`
       : '';
 
     hdr.innerHTML =
@@ -1498,7 +1506,7 @@
       `${chlMain != null ? '<span class="tsi-unit">мкг/л</span>' : ''}` +
       deltaHtml +
       `</div>` +
-      `<span class="tsi-label">${esc(mainLabel)} · ${esc(fmtDateRu(pred ? pred.date_used : S.date))}</span>` +
+      `<span class="tsi-label">${esc(mainLabel)}</span>` +
       `</div>` +
       `<div class="hero-right">` +
       `<span class="status-badge ${ev.badgeClass}">${esc(ev.statusLabel)}</span>` +
@@ -1573,12 +1581,12 @@
     }
 
     const reasonsHtml = (p.reasons && p.reasons.length && p.chl_a_forecast != null)
-      ? `<div class="section-block"><div class="section-label">Интерпретация и причины</div>` +
+      ? `<div class="section-block"><div class="section-label">Вердикт графа знаний (Часть 3)</div>` +
         `<ul class="clean-list">${p.reasons.map((r) => `<li>${esc(r)}</li>`).join('')}</ul></div>`
       : '';
 
     const recsHtml = (p.recommendations && p.recommendations.length)
-      ? `<div class="section-block"><div class="section-label">Рекомендации (с учётом ООПТ)</div>` +
+      ? `<div class="section-block"><div class="section-label">Рекомендации</div>` +
         `<ul class="clean-list">${p.recommendations.map((r) => `<li>${esc(r)}</li>`).join('')}</ul></div>`
       : '';
 
@@ -2191,8 +2199,10 @@
         Object.entries(modes).map(([k, info]) => {
           const ok = Boolean(info && info.available);
           const lbl = k === 'lab' ? 'Лаборатория' : 'Спутник';
-          const detail = info && info.data_file ? `${info.data_file}` : (info && info.reason ? info.reason : '');
-          return `<span class="pill ${ok ? 'on' : 'off'}">${esc(lbl)}: ${ok ? 'данные + модели' : esc(detail || 'только факт')}</span>`;
+          const detail = info && info.reason
+            ? (info.data_file ? `${info.data_file} · ${info.reason}` : info.reason)
+            : (info && info.data_file ? `${info.data_file}` : 'только факт');
+          return `<span class="pill ${ok ? 'on' : 'off'}">${esc(lbl)}: ${ok ? 'данные + модели' : esc(detail)}</span>`;
         }).join('') +
         `</div></div>`;
 

@@ -308,21 +308,17 @@ def test_part3_graph_cli_integration():
             assert v35.alert_level == "RED"
             assert v8.alert_level == "GREEN"
 
-            # 2) Проверка ВСЕХ сохранённых заглушек (ООПТ, запрет альгицидов, каскад, стратификация, 15 мкг/л, метео, вероятности, TSI)
-            joined_18 = " | ".join(v18.reasons)
+            # 2) В реальном режиме выдаётся только реальный SPARQL-вердикт Части 3 и алгебраический TSI (без заглушек и выдуманных рекомендаций!)
+            assert len(v18.reasons) == 1
             assert "Граф знаний (Часть 3" in v18.reasons[0] and "below_threshold" in v18.reasons[0]
-            assert "15 мкг/л" in joined_18 and "68%" in joined_18
-            assert "T14=22.5" in joined_18 and "45%" in joined_18
-            assert "полимиктическое" in joined_18 and "2.4 м" in joined_18
-            assert "Озеро Мястро" in joined_18
+            assert "заглуш" not in v18.reasons[0].lower()
             assert v18.trophic_index > 55 and v18.trophic_class == "эвтрофный"
-            assert any("альгицид" in r.lower() and "нарочанский" in r.lower() for r in v18.recommendations)
+            assert v18.recommendations == []
 
-            assert "warning" in v35.reasons[0]
-            assert any("Озеро Мястро" in r for r in v35.recommendations)  # каскадное предупреждение ниже по стоку
-            assert any("альгицид" in r.lower() for r in v35.recommendations)
+            assert len(v35.reasons) == 1 and "warning" in v35.reasons[0]
+            assert v35.recommendations == []
 
-            # 3) Недекадные даты (лабораторный режим) безопасно нормализуются к 1/11/21
+            # 3) Недекадные даты (лабораторный режим) безопасно обрабатываются
             for d_raw in (date(2018, 7, 15), date(2025, 8, 5), date(2025, 8, 29)):
                 vd = eng.assess("naroch", "Озеро Нарочь", d_raw, 26.0, 0.7, 21.0, 0.4, lake_meta=reg["naroch"], registry=reg)
                 assert vd.alert_level == "RED"
@@ -376,11 +372,13 @@ def test_part3_graph_cli_integration():
             finally:
                 srv.shutdown()
 
-            # 7) Полный сквозной прогон run_pipeline() и timeline() с реальной Частью 3
+            # 7) Полный сквозной прогон run_pipeline() и timeline() с реальной Частью 3 (без текста о заглушках)
             res = pipeline.run_pipeline(c, "batorino", date(2025, 7, 11))
             assert res["alert_level"] in ("GREEN", "RED")
             assert any("graph_cli" in s for s in res["sources"])
-            assert any("заглушки Части 4" in n for n in res["notes"])
+            assert res["recommendations"] == []
+            assert not any("заглуш" in n.lower() for n in res["notes"])
+            assert not any("заглуш" in r.lower() for r in res["reasons"])
             tl = pipeline.timeline(c, "satellite")
             tl_alerts = {
                 s.get("a") for day in tl["snapshots"].values() for s in day.values() if s.get("a") is not None

@@ -144,7 +144,7 @@ def build_components() -> dict:
         status["part3"] = f"реальная: {config.ENGINE_MODULE}.{c['engine'].describe()}"
     elif _module_available(config.GRAPH_CLI_MODULE) and (ontology_path is not None or oxi_url is not None):
         c["engine"] = adapters.GraphCliEngine(config.GRAPH_CLI_MODULE, ontology_path, oxi_url)
-        status["part3"] = f"реальная: {config.GRAPH_CLI_MODULE} ({c['engine'].describe()}; доп. контекст — заглушки)"
+        status["part3"] = f"реальная: {config.GRAPH_CLI_MODULE} ({c['engine'].describe()})"
     else:
         c["engine"] = stubs.StubGraphEngine()
         status["part3"] = _missing(f"{config.GRAPH_CLI_MODULE} + data/knowledge_graph/graph.ttl")
@@ -391,13 +391,6 @@ def run_pipeline(c: dict, wb_id: str, requested: date, mode: str = "satellite") 
         c["engine"], wb_id, wb, f["date_used"], chl, prob,
         f["temp_mean_14d"], f["calm_fraction_7d"], att, c["registry"],
     )
-    if isinstance(c.get("engine"), adapters.GraphCliEngine):
-        thr = getattr(c["engine"], "threshold_ug_l", 25.0)
-        notes.append(
-            f"Граф знаний Части 3 (graph_cli) выдаёт 2-уровневый статус (GREEN/RED, порог {thr:g} мкг/л); "
-            "расширенный контекст (ООПТ, запрет хим. альгицидов, каскад, стратификация, порог 15 мкг/л, "
-            "метео, вероятности, TSI и рекомендации) работает через заглушки Части 4."
-        )
     return {**result, "chl_a_current": chl_current, "chl_a_forecast": chl,
             "pred_low_ug_l": low, "pred_high_ug_l": high, "uncertainty_ug_l": mae,
             "bloom_probability": prob, "attention_probability": att,

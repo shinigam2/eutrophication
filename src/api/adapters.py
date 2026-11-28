@@ -22,7 +22,7 @@ import joblib
 import pandas as pd
 import yaml
 
-from src.api.stubs import AlertVerdict, enrich_verdict_with_stubs
+from src.api.stubs import AlertVerdict, carlson_tsi, trophic_class
 
 
 class IntegrationError(RuntimeError):
@@ -721,9 +721,8 @@ class GraphCliEngine:
     через read_history(..., target_date=...), иначе выполняет те же SPARQL-правила локально в памяти
     через rdflib без записи в graph.ttl на диске.
 
-    Расширенный контекст (ООПТ, запрет хим. альгицидов, каскад, глубина/стратификация, порог внимания
-    15 мкг/л, метеофакторы, вероятности, индекс Карлсона TSI и рекомендации) сохраняется через
-    модульные заглушки enrich_verdict_with_stubs() до переноса этих правил в онтологию Части 3.
+    Возвращает только реально вычисленные данные (2-уровневый статус из SPARQL-графа Части 3
+    и алгебраический индекс трофности Карлсона TSI), без заглушек и выдуманных рекомендаций.
     """
 
     def __init__(
@@ -942,17 +941,13 @@ class GraphCliEngine:
             f"прогноз Chl-a на {target_date.isoformat()} = {float(chl):.1f} мкг/л "
             f"{cmp_op} порога {threshold:g} мкг/л → {alert_status} ({level})"
         ]
-        return enrich_verdict_with_stubs(
-            level,
-            float(chl),
-            threshold_ug_l=threshold,
-            base_reasons=base_reasons,
-            bloom_prob=prob,
-            attention_prob=attention_prob,
-            temp14=temp14,
-            calm7=calm7,
-            lake_meta=lake_meta,
-            registry=registry,
+        tsi = carlson_tsi(float(chl))
+        return AlertVerdict(
+            alert_level=level,
+            trophic_index=tsi,
+            trophic_class=trophic_class(tsi),
+            reasons=base_reasons,
+            recommendations=[],
         )
 
 

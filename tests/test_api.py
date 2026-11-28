@@ -184,7 +184,9 @@ def test_api_real_repo_part3_connected():
                 assert pr["alert_level"] in ("GREEN", "RED")
                 assert pr["pred_low_ug_l"] is not None and pr["pred_high_ug_l"] is not None
                 assert any("graph_cli" in s for s in pr["sources"])
-                assert any("альгицид" in r.lower() for r in pr["recommendations"])
+                assert pr["recommendations"] == []
+                assert len(pr["reasons"]) == 1 and "Граф знаний (Часть 3" in pr["reasons"][0]
+                assert not any("заглуш" in x.lower() for x in pr["reasons"] + pr["notes"])
 
             hist = c.get("/history/batorino", params={"date": "2026-11-11", "limit": 24}).json()
             pt_last = next(p for p in hist["points"] if p["date"] == "2026-11-11")
