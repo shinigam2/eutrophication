@@ -27,8 +27,9 @@ docker compose up -d
 # или без установки Python/GDAL на хост:
 docker compose --profile etl run --rm etl
 
-# 3. Загрузить локальный граф Части 3 (volkovich) в живой Oxigraph
+# 3. Загрузить базовый граф Части 3 (volkovich) и свежие прогнозы Части 2 в живой Oxigraph
 .venv/bin/python3 src/knowledge_graph/graph_cli.py import-ttl --endpoint http://127.0.0.1:7878
+.venv/bin/python3 src/knowledge_graph/graph_cli.py import-results --endpoint http://127.0.0.1:7878
 
 # 4. Пересобрать витрины из локальных кэшей (без повторного скачивания, ~4 с)
 .venv/bin/python3 -m src.etl.run_pipeline --skip-fetch --skip-gloria-lab --to-postgis

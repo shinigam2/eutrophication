@@ -13,7 +13,6 @@ import importlib
 import inspect
 import json
 import math
-from calendar import monthrange
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -790,6 +789,15 @@ class GraphCliEngine:
         valid_thr = [t for t in thresholds if t is not None and t > 0]
         self.threshold_ug_l = float(valid_thr[0]) if valid_thr else 25.0
 
+        # Если подключён живой Oxigraph, синхронизируем порог с ним (с безопасным fallback на graph.ttl)
+        oxi_thr = self._read_oxigraph_threshold()
+        if oxi_thr is not None:
+            self.threshold_ug_l = oxi_thr
+            self._base_triples = [
+                tr for tr in self._base_triples
+                if not (tr[0] == self._rule_uri and tr[1] == self._eutro.thresholdUgL)
+            ] + [(self._rule_uri, self._eutro.thresholdUgL, Literal(oxi_thr))]
+
         # Индекс зарегистрированных в graph.ttl водоёмов (waterBodyId -> URIRef)
         self._registered_waters: Dict[str, object] = {}
         for subj, obj in base_graph.subject_objects(self._eutro.waterBodyId):
@@ -819,6 +827,32 @@ class GraphCliEngine:
                 pagination="",
             )
         )
+
+    def _read_oxigraph_threshold(self) -> Optional[float]:
+        """Считывает актуальный порог eutro:thresholdUgL из живого Oxigraph (таймаут 2 с, без падения)."""
+        if not self.oxigraph_url:
+            return None
+        from urllib.request import Request, urlopen
+
+        query = (
+            self.mod.PREFIXES
+            + f"SELECT ?thresholdUgL WHERE {{ eutro:{self.mod.ALERT_RULE_ID} eutro:thresholdUgL ?thresholdUgL . }}"
+        )
+        req = Request(
+            f"{self.oxigraph_url}/query",
+            data=query.encode("utf-8"),
+            headers={"Content-Type": "application/sparql-query", "Accept": "application/sparql-results+json"},
+        )
+        try:
+            with urlopen(req, timeout=2) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (OSError, ValueError):
+            return None
+        for b in data.get("results", {}).get("bindings", []):
+            val = _num(b.get("thresholdUgL", {}).get("value"))
+            if val is not None and val > 0:
+                return float(val)
+        return None
 
     def describe(self) -> str:
         src = self.ontology_path.name if self.ontology_path else "memory"

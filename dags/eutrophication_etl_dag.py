@@ -76,4 +76,19 @@ if DAG is not None and BashOperator is not None:
             ),
         )
 
-        sync_osm >> [fetch_meteo, fetch_sentinel] >> validate_and_features >> [load_postgis, sync_oxigraph]
+        run_models_predict = BashOperator(
+            task_id="run_models_predict_10d",
+            bash_command=f"cd {PROJECT_DIR} && python -m src.models.predict",
+        )
+
+        import_results_oxigraph = BashOperator(
+            task_id="import_results_to_oxigraph",
+            bash_command=(
+                f"cd {PROJECT_DIR} && "
+                "python src/knowledge_graph/graph_cli.py import-results "
+                "--endpoint ${OXIGRAPH_URL:-http://oxigraph:7878}"
+            ),
+        )
+
+        sync_osm >> [fetch_meteo, fetch_sentinel] >> validate_and_features >> [load_postgis, sync_oxigraph, run_models_predict]
+        [sync_oxigraph, run_models_predict] >> import_results_oxigraph

@@ -48,6 +48,10 @@ services:
       context: .
       dockerfile: Dockerfile
     profiles: ["api"]
+    depends_on:
+      - oxigraph
+    environment:
+      OXIGRAPH_URL: http://oxigraph:7878
     ports:
       - "127.0.0.1:8000:8000"
     volumes:

@@ -29,8 +29,13 @@ PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
 """
 
 ALERT_RULE_ID = "chlorophyll-alert"
-SEED_RULE = f"INSERT DATA {{ eutro:{ALERT_RULE_ID} eutro:thresholdUgL 25 . }}"
-OBSERVATION_STATUSES = ("valid", "ice_cover", "cloudy_missing")
+SEED_RULE = (
+    f"INSERT {{ eutro:{ALERT_RULE_ID} eutro:thresholdUgL 25 . }}\n"
+    f"WHERE {{ FILTER NOT EXISTS {{ eutro:{ALERT_RULE_ID} eutro:thresholdUgL ?existingThreshold . }} }}"
+)
+VALUE_OBSERVATION_STATUSES = ("valid", "interpolated_1step")
+MISSING_OBSERVATION_STATUSES = ("ice_cover", "cloudy_missing", "insufficient_pixels")
+OBSERVATION_STATUSES = VALUE_OBSERVATION_STATUSES + MISSING_OBSERVATION_STATUSES
 
 FORECAST_PATTERN = (
     "{ ?entry a eutro:Forecast ; eutro:waterBody ?water ; "
@@ -74,9 +79,10 @@ WHERE {
   OPTIONAL {
     ?observation a eutro:Observation ; eutro:waterBody ?water ; eutro:observedDate ?sliceDate .
     BIND(?sliceDate AS ?observedDate)
-    OPTIONAL { ?observation eutro:obsStatus ?obsStatus . }
+    OPTIONAL { ?observation eutro:obsStatus ?rawObsStatus . }
+    BIND(COALESCE(?rawObsStatus, "valid") AS ?obsStatus)
     OPTIONAL { ?observation eutro:chlorophyllUgL ?measuredUgL . }
-    BIND(IF(COALESCE(?obsStatus, "valid") = "valid", ?measuredUgL, ?missingObservationValue) AS ?observedUgL)
+    BIND(IF(?obsStatus IN ("valid", "interpolated_1step"), ?measuredUgL, ?missingObservationValue) AS ?observedUgL)
   }
   BIND((?predictedUgL - ?observedUgL) AS ?differenceUgL)
   $filters
@@ -276,17 +282,21 @@ def load_results(results_path):
         obs_status = prediction.get("obs_status", "valid")
         if not isinstance(water_id, str) or not water_id.strip():
             raise ValueError(f"запись {key!r}: укажи water_body_id")
+        water_id = water_id.strip()
         if obs_status not in OBSERVATION_STATUSES:
-            raise ValueError(f"запись {key!r}: obs_status должен быть valid, ice_cover или cloudy_missing")
+            allowed = ", ".join(OBSERVATION_STATUSES)
+            raise ValueError(f"запись {key!r}: obs_status должен быть одним из: {allowed}")
         if not isinstance(raw_base_date, str):
             raise ValueError(f"запись {key!r}: base_date должна содержать дату строкой")
-        if obs_status == "valid" and type(raw_observed) not in (int, float):
-            raise ValueError(f"запись {key!r}: для valid укажи числовое chl_a_current_ug_l")
-        if obs_status != "valid" and raw_observed is not None:
+        if obs_status in VALUE_OBSERVATION_STATUSES and type(raw_observed) not in (int, float):
+            raise ValueError(f"запись {key!r}: для {obs_status} укажи числовое chl_a_current_ug_l")
+        if obs_status in MISSING_OBSERVATION_STATUSES and raw_observed is not None:
             raise ValueError(f"запись {key!r}: для {obs_status} значение chl_a_current_ug_l должно быть null")
+        if obs_status in MISSING_OBSERVATION_STATUSES and raw_predicted is not None:
+            raise ValueError(f"запись {key!r}: для {obs_status} прогноз chl_a_pred_ug_l должен быть null")
         try:
             base_date = parse_date(raw_base_date)
-            observed = parse_concentration(str(raw_observed)) if obs_status == "valid" else None
+            observed = parse_concentration(str(raw_observed)) if obs_status in VALUE_OBSERVATION_STATUSES else None
             records_to_add = [((water_id, base_date, observed, obs_status), observations)]
             if raw_predicted is not None:
                 if type(raw_predicted) not in (int, float) or not isinstance(raw_target_date, str):
@@ -396,7 +406,8 @@ def search_records(
     if alert_status not in (None, "warning", "below_threshold"):
         raise ValueError("alert_status должен быть warning или below_threshold")
     if obs_status is not None and obs_status not in OBSERVATION_STATUSES:
-        raise ValueError("obs_status должен быть valid, ice_cover или cloudy_missing")
+        allowed = ", ".join(OBSERVATION_STATUSES)
+        raise ValueError(f"obs_status должен быть одним из: {allowed}")
 
     target_date = _search_date(target_date, "target_date")
     observed_date = _search_date(observed_date, "observed_date")
@@ -504,29 +515,29 @@ def main():
         parser.error("--input доступен только для import-results")
     if args.obs_status is not None and args.phase != "observe":
         parser.error("--obs-status доступен только для observe")
+    water_body_id = args.water_body_id.strip() if args.water_body_id is not None else None
     record_fields = (args.name, args.base_date, args.target_date, args.observed_date, args.value)
     graph_path = (args.graph or DEFAULT_GRAPH).expanduser().resolve()
     if args.phase == "import-ttl":
-        if not args.endpoint:
-            parser.error("для import-ttl укажи --endpoint")
         if args.geojson is not None or args.water_body_id is not None or any(field is not None for field in record_fields):
             parser.error("import-ttl принимает только --endpoint и --graph")
+        endpoint = args.endpoint or DEFAULT_ENDPOINT
         try:
-            oxigraph_post(args.endpoint, "store?default", graph_path.read_bytes(), "text/turtle")
+            oxigraph_post(endpoint, "store?default", graph_path.read_bytes(), "text/turtle")
         except (OSError, ValueError) as error:
-            parser.exit(1, f"Ошибка импорта {graph_path} в {args.endpoint}\n{error}\n")
-        print(f"Граф загружен в Oxigraph: {args.endpoint}")
+            parser.exit(1, f"Ошибка импорта {graph_path} в {endpoint}\n{error}\n")
+        print(f"Граф загружен в Oxigraph: {endpoint}")
         return
 
     if args.endpoint is not None and args.graph is not None:
         parser.error("выбери одно хранилище: --endpoint или --graph")
 
     if args.phase == "import-results":
-        if (args.graph is not None or args.geojson is not None or args.water_body_id is not None
+        if (args.geojson is not None or args.water_body_id is not None
                 or any(field is not None for field in record_fields)):
-            parser.error("import-results принимает только --endpoint и --input")
+            parser.error("import-results принимает только --endpoint/--graph и --input")
         results_path = (args.input or DEFAULT_RESULTS).expanduser().resolve()
-        endpoint = args.endpoint or DEFAULT_ENDPOINT
+        endpoint = None if args.graph is not None else (args.endpoint or DEFAULT_ENDPOINT)
         try:
             forecasts, observations = load_results(results_path)
             if observations:
@@ -534,7 +545,7 @@ def main():
                 if forecasts:
                     operations.extend((SEED_RULE, insert_records("forecast", forecasts)))
                 apply_updates(graph_path, endpoint, *operations)
-        except (OSError, ValueError) as error:
+        except (OSError, ValueError, SyntaxError, ParserError, Timeout) as error:
             parser.exit(1, f"Ошибка импорта результатов из {results_path}\n{error}\n")
         print(f"Обработано прогнозов: {len(forecasts)}. Наблюдений: {len(observations)}.")
         return
@@ -560,29 +571,30 @@ def main():
     if args.geojson is not None:
         parser.error("--geojson доступен только для sync-lakes")
     if args.phase in ("history", "get-forecast"):
-        if any(field is not None for field in (args.graph, args.name, args.value, args.base_date, args.observed_date)):
-            parser.error(f"{args.phase} читает Oxigraph, укажи --endpoint и --water-body-id при необходимости")
-        if args.phase == "get-forecast" and (not args.water_body_id or args.target_date is None):
+        if any(field is not None for field in (args.name, args.value, args.base_date, args.observed_date)):
+            parser.error(f"{args.phase} принимает --endpoint или --graph и --water-body-id при необходимости")
+        if args.phase == "get-forecast" and (not water_body_id or args.target_date is None):
             parser.error("для get-forecast укажи --water-body-id и --target-date")
         if args.phase == "history" and args.target_date is not None:
             parser.error("для поиска по целевой дате используй get-forecast")
 
-        endpoint = args.endpoint or DEFAULT_ENDPOINT
+        endpoint = None if args.graph is not None else (args.endpoint or DEFAULT_ENDPOINT)
         try:
-            rows = read_history(None, args.water_body_id, endpoint=endpoint, target_date=args.target_date)
-        except (OSError, ValueError) as error:
-            parser.exit(1, f"Ошибка при работе с {endpoint}\n{error}\n")
+            local_graph = load_graph(graph_path) if endpoint is None else None
+            rows = read_history(local_graph, water_body_id, endpoint=endpoint, target_date=args.target_date)
+        except (OSError, ValueError, SyntaxError, ParserError) as error:
+            parser.exit(1, f"Ошибка при работе с {endpoint or graph_path}\n{error}\n")
         if args.phase == "get-forecast":
             if not rows:
-                parser.exit(1, f"Прогноз для {args.water_body_id} на {args.target_date} не найден.\n")
+                parser.exit(1, f"Прогноз для {water_body_id} на {args.target_date} не найден.\n")
             if len(rows) > 1:
-                parser.exit(1, f"Для {args.water_body_id} на {args.target_date} найдено несколько записей.\n")
+                parser.exit(1, f"Для {water_body_id} на {args.target_date} найдено несколько записей.\n")
             print(json.dumps(rows[0], ensure_ascii=False, indent=2))
         else:
             print(json.dumps(rows, ensure_ascii=False, indent=2))
         return
 
-    if not args.water_body_id:
+    if not water_body_id:
         parser.error("укажи --water-body-id")
     obs_status = args.obs_status or "valid"
     if args.phase == "forecast":
@@ -594,13 +606,13 @@ def main():
     else:
         if args.observed_date is None or args.base_date is not None or args.target_date is not None:
             parser.error("для observe укажи --observed-date")
-        if obs_status == "valid" and args.value is None:
-            parser.error("для observe со статусом valid укажи --value")
-        if obs_status != "valid" and args.value is not None:
+        if obs_status in VALUE_OBSERVATION_STATUSES and args.value is None:
+            parser.error(f"для observe со статусом {obs_status} укажи --value")
+        if obs_status in MISSING_OBSERVATION_STATUSES and args.value is not None:
             parser.error(f"для observe со статусом {obs_status} убери --value")
         record_date = args.observed_date
     operation = insert_record(
-        args.phase, args.water_body_id, record_date, args.value, args.name,
+        args.phase, water_body_id, record_date, args.value, args.name,
         base_date=args.base_date, obs_status=obs_status,
     )
     endpoint = None if args.graph is not None else (args.endpoint or DEFAULT_ENDPOINT)
@@ -609,7 +621,7 @@ def main():
             graph = apply_updates(graph_path, endpoint, SEED_RULE, operation)
         else:
             graph = apply_updates(graph_path, endpoint, operation)
-        rows = read_history(graph, args.water_body_id, endpoint=endpoint)
+        rows = read_history(graph, water_body_id, endpoint=endpoint)
         print(json.dumps(rows, ensure_ascii=False, indent=2))
     except (OSError, ValueError, SyntaxError, ParserError, Timeout) as error:
         parser.exit(1, f"Ошибка при работе с {endpoint or graph_path}\n{error}\n")
