@@ -72,7 +72,7 @@ def test_model_metrics_and_artifacts_consistent():
 
 
 def test_predict_lake_date_validation_and_part3_import():
-    """predict_lake() валидирует YYYY-MM-DD, привязывает дату в пределах <=10 дн., а result.json грузится в Часть 3."""
+    """predict_lake() валидирует YYYY-MM-DD, честно отдаёт пропуски/интерполяции, а result.json грузится в Часть 3."""
     with pytest.raises(ValueError, match="YYYY-MM-DD"):
         predict_lake("naroch", "2026-08")
 
@@ -81,12 +81,27 @@ def test_predict_lake_date_validation_and_part3_import():
 
     snapped = predict_lake("naroch", "2026-08-05")
     assert snapped["base_date"] == "2026-08-01"
+    assert snapped["obs_status"] == "valid"
     assert snapped["date"] == "2026-08-11"
     assert 0.0 <= snapped["bloom_prob"] <= snapped["attention_prob"] <= 1.0
+
+    # Зимний пропуск (ice_cover): дата и статус фиксируются, числа и прогноз = None
+    winter = predict_lake("naroch", "2025-01-11")
+    assert winter["base_date"] == "2025-01-11"
+    assert winter["obs_status"] == "ice_cover"
+    assert winter["chl_a_current_ug_l"] is None and winter["chl_a_pred_ug_l"] is None and winter["date"] is None
+
+    # Одношаговая интерполяция: числовое наблюдение от Модели 1, но без прогноза на +10д
+    interp = predict_lake("naroch", "2026-07-11")
+    assert interp["base_date"] == "2026-07-11"
+    assert interp["obs_status"] == "interpolated_1step"
+    assert isinstance(interp["chl_a_current_ug_l"], float) and interp["chl_a_current_ug_l"] > 0
+    assert interp["chl_a_pred_ug_l"] is None and interp["date"] is None
 
     res_json = json.loads((ROOT / "data/processed/result.json").read_text(encoding="utf-8"))
     for lid, rec in res_json["predictions"].items():
         live = predict_lake(lid, rec["base_date"])
+        assert live["obs_status"] == rec["obs_status"]
         assert live["chl_a_current_ug_l"] == rec["chl_a_current_ug_l"]
         assert live["chl_a_pred_ug_l"] == rec["chl_a_pred_ug_l"]
         assert live["attention_prob"] == rec["attention_prob"]
@@ -97,18 +112,34 @@ def test_predict_lake_date_validation_and_part3_import():
 
     g = graph_cli.load_graph(ROOT / "data/knowledge_graph/graph.ttl")
     forecasts, observations = graph_cli.load_results(ROOT / "data/processed/result.json")
-    assert len(forecasts) == len(observations) == len(res_json["predictions"]) == 8
+    expected_fc = sum(1 for r in res_json["predictions"].values() if r["chl_a_pred_ug_l"] is not None)
+    assert len(observations) == len(res_json["predictions"]) == 8
+    assert len(forecasts) == expected_fc
+    assert any(r["obs_status"] == "cloudy_missing" for r in res_json["predictions"].values())
     g.update(graph_cli.PREFIXES + graph_cli.SEED_RULE)
     g.update(graph_cli.PREFIXES + graph_cli.insert_records("observe", observations))
     g.update(graph_cli.PREFIXES + graph_cli.insert_records("forecast", forecasts))
     for lid, rec in res_json["predictions"].items():
-        rows = graph_cli.search_records(
+        obs_rows = graph_cli.search_records(
             graph=g,
-            record_type="forecast",
+            record_type="observation",
             water_body_id=lid,
-            target_date=date.fromisoformat(rec["date"]),
+            observed_date=date.fromisoformat(rec["base_date"]),
         )
-        assert len(rows) == 1
-        assert abs(float(rows[0]["predictedUgL"]) - rec["chl_a_pred_ug_l"]) < 0.01
-        assert rows[0]["baseDate"] == rec["base_date"]
-        assert rows[0]["alertStatus"] in ("warning", "below_threshold")
+        assert len(obs_rows) == 1
+        assert obs_rows[0]["obsStatus"] == rec["obs_status"]
+        if rec["chl_a_pred_ug_l"] is not None:
+            rows = graph_cli.search_records(
+                graph=g,
+                record_type="forecast",
+                water_body_id=lid,
+                target_date=date.fromisoformat(rec["date"]),
+            )
+            assert len(rows) == 1
+            assert abs(float(rows[0]["predictedUgL"]) - rec["chl_a_pred_ug_l"]) < 0.01
+            assert rows[0]["baseDate"] == rec["base_date"]
+            assert rows[0]["alertStatus"] in ("warning", "below_threshold")
+        else:
+            assert obs_rows[0]["observedUgL"] is None
+            fc_rows = graph_cli.search_records(graph=g, record_type="forecast", water_body_id=lid)
+            assert fc_rows == []

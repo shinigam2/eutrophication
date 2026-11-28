@@ -70,7 +70,7 @@
 - [`src/models/regressor.py`](src/models/regressor.py) — обучение **Модели 1** (`Ridge` на `log1p(chl_a)`) на **4 737** парах GLORIA (`≤ 60 мкг/л`, без `'other'`) и честная zero-shot проверка на **36** пробах БГУ: `MAE = 2,76 мкг/л`, `RMSE = 3,215`, `Spearman ρ = +0,814` (против формулы Mishra: `7,796 / 8,758 / −0,252`). Сохраняет `saved_models/regressor.joblib`.
 - [`src/models/build_forecast_dataset.py`](src/models/build_forecast_dataset.py) — прогоняет Модель 1 по всем 1 140 декадам витрины, формирует `chl_a_current_ug_l`, защищённые лаги (`<= 12` дней) `chl_a_lag10d` / `chl_a_delta_10d` и целевую переменную `target_chl_a_next_10d`, сохраняя `data/processed/features_forecast_10d.parquet` (`1 140 × 58`).
 - [`src/models/forecaster.py`](src/models/forecaster.py) — обучение **Модели 2** (`RandomForest` на `log1p`, 19 признаков) на периоде **2018–2024** (`599` строк) и тест на **2025–2026** (`227` строк): `MAE = 1,821 мкг/л`, `RMSE = 2,744`, `Spearman ρ = +0,643`, `ROC-AUC(≥15) = 0,858` (против наивной инерции `2,593 / 3,625 / +0,477`). Сохраняет `saved_models/forecaster.joblib` и `data/processed/model_metrics.json`.
-- [`src/models/predict.py`](src/models/predict.py) — пакетный и точечный инференс (с проверкой даты и привязкой к ближайшей предыдущей валидной декаде), генерация [`data/processed/result.json`](data/processed/result.json).
+- [`src/models/predict.py`](src/models/predict.py) — пакетный и точечный инференс (`--lake`, `--date`) со сверкой по полной декадной ленте `satellite_decadal.parquet`: для `valid`-декад считает прогноз `+10 д`, а для `ice_cover` / `cloudy_missing` / `insufficient_pixels` честно записывает `obs_status` и `null` в [`data/processed/result.json`](data/processed/result.json).
 
 ### Часть 3 — Граф знаний и пороговый вывод (`src/knowledge_graph/graph_cli.py`)
 - Онтология и стартовые факты хранятся в [`data/knowledge_graph/graph.ttl`](data/knowledge_graph/graph.ttl) в пространстве имён `eutro: <https://shinigam2.github.io/eutrophication/>` и `water: <https://shinigam2.github.io/eutrophication/water/>`.
@@ -78,7 +78,7 @@
 - Поддерживает команды CLI:
   - `import-ttl` — загрузка исходного графа в Oxigraph;
   - `sync-lakes` — синхронизация 8 водоёмов из `data/reference/lakes.geojson`;
-  - `import-results` — импорт наблюдений и прогнозов из `data/processed/result.json` (16 записей: 8 `Observation` + 8 `Forecast`);
+  - `import-results` — импорт наблюдений (включая пропуски `cloudy_missing` / `ice_cover` без числа) и прогнозов из `data/processed/result.json`;
   - `observe` / `forecast` — идемпотентный upsert одиночных записей;
   - `history` / `get-forecast` / `search` — SPARQL-выборка истории, прогноза и фильтрация записей (16 фильтров).
 - Правило оповещения `eutro:chlorophyll-alert` задаёт порог `eutro:thresholdUgL = 25` мкг/л (условный `SEED_RULE` с `FILTER NOT EXISTS` не перезаписывает вручную изменённый порог). Результат SPARQL-вывода — **2 уровня**: `warning` (`RED`, прогноз $\ge 25$ мкг/л) и `below_threshold` (`GREEN`, прогноз $< 25$ мкг/л).

@@ -138,7 +138,10 @@ def test_cli_import_results_history_and_get_forecast_with_local_graph(tmp_path):
         text=True,
         check=True,
     )
-    assert "Обработано прогнозов: 8. Наблюдений: 8." in r_imp.stdout
+    res_json = json.loads((ROOT / "data/processed/result.json").read_text(encoding="utf-8"))
+    exp_fc = sum(1 for r in res_json["predictions"].values() if r["chl_a_pred_ug_l"] is not None)
+    exp_obs = len(res_json["predictions"])
+    assert f"Обработано прогнозов: {exp_fc}. Наблюдений: {exp_obs}." in r_imp.stdout
 
     r_hist = subprocess.run(
         [sys.executable, str(ROOT / "src/knowledge_graph/graph_cli.py"), "history", "--graph", str(ttl), "--water-body-id", "batorino"],
@@ -149,7 +152,18 @@ def test_cli_import_results_history_and_get_forecast_with_local_graph(tmp_path):
     hist_rows = json.loads(r_hist.stdout)
     assert len(hist_rows) == 2
 
-    res_json = json.loads((ROOT / "data/processed/result.json").read_text(encoding="utf-8"))
+    # Рудаково на 2026-11-11 имеет пропуск cloudy_missing -> в графе сохранено наблюдение без числа и без прогноза
+    r_rud = subprocess.run(
+        [sys.executable, str(ROOT / "src/knowledge_graph/graph_cli.py"), "history", "--graph", str(ttl), "--water-body-id", "rudakovo"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    rud_rows = json.loads(r_rud.stdout)
+    assert len(rud_rows) == 1
+    assert rud_rows[0]["obsStatus"] == "cloudy_missing"
+    assert rud_rows[0]["observedUgL"] is None and rud_rows[0]["predictedUgL"] is None
+
     bat = res_json["predictions"]["batorino"]
     r_get = subprocess.run(
         [

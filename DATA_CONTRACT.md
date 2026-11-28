@@ -95,12 +95,13 @@ GeoJSON `FeatureCollection` с полигонами (`MultiPolygon`/`Polygon`, W
 
 ```json
 {
-  "generated_at_utc": "2026-11-27T14:07:12Z",
+  "generated_at_utc": "2026-11-28T13:18:19Z",
   "forecast_horizon_days": 10,
   "predictions": {
     "batorino": {
       "water_body_id": "batorino",
       "base_date": "2026-11-11",
+      "obs_status": "valid",
       "chl_a_current_ug_l": 6.3,
       "date": "2026-11-21",
       "chl_a_pred_ug_l": 7.24,
@@ -112,10 +113,27 @@ GeoJSON `FeatureCollection` с полигонами (`MultiPolygon`/`Polygon`, W
       "bloom_prob": 0.0,
       "weather_context": { "temp_mean_14d": 3.6, "calm_fraction_7d": 0.57, "precip_sum_14d": 5.5 },
       "top_drivers": ["max_depth_m", "mean_depth_m", "precip_sum_14d"]
+    },
+    "rudakovo": {
+      "water_body_id": "rudakovo",
+      "base_date": "2026-11-11",
+      "obs_status": "cloudy_missing",
+      "chl_a_current_ug_l": null,
+      "date": null,
+      "chl_a_pred_ug_l": null,
+      "chl_a_pred_low_ug_l": null,
+      "chl_a_pred_high_ug_l": null,
+      "attention_threshold_ug_l": 15.0,
+      "bloom_threshold_ug_l": 25.0,
+      "attention_prob": null,
+      "bloom_prob": null,
+      "weather_context": { "temp_mean_14d": null, "calm_fraction_7d": null, "precip_sum_14d": null },
+      "top_drivers": []
     }
   }
 }
 ```
+Для пропусков (`ice_cover`, `cloudy_missing`, `insufficient_pixels`) Часть 2 честно передаёт `obs_status` и `null`, а `graph_cli.py import-results` сохраняет в граф знаний наблюдение без числа и без прогноза, сохраняя непрерывную историю.
 
 ---
 

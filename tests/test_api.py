@@ -173,20 +173,25 @@ def test_api_real_repo_part3_connected():
             assert lakes["batorino"]["cascade_outflow_to"] == "myastro"
             assert lakes["batorino"]["attention_ug_l"] == 15.0 and lakes["batorino"]["bloom_ug_l"] == 25.0
 
-            # Полное совпадение /predict, /history и /timeline с result.json Части 2
+            # Полное совпадение /predict, /history и /timeline с result.json Части 2 (включая пропуски)
             for lid in ("naroch", "batorino", "rudakovo"):
                 rec = res_json["predictions"][lid]
                 pr = c.get(f"/predict/{lid}", params={"date": rec["base_date"]}).json()
+                assert pr["obs_status"] == rec["obs_status"]
                 assert pr["chl_a_current"] == rec["chl_a_current_ug_l"]
                 assert pr["chl_a_forecast"] == rec["chl_a_pred_ug_l"]
                 assert pr["attention_probability"] == rec["attention_prob"]
                 assert pr["bloom_probability"] == rec["bloom_prob"]
-                assert pr["alert_level"] in ("GREEN", "RED")
-                assert pr["pred_low_ug_l"] is not None and pr["pred_high_ug_l"] is not None
-                assert any("graph_cli" in s for s in pr["sources"])
-                assert pr["recommendations"] == []
-                assert len(pr["reasons"]) == 1 and "Граф знаний (Часть 3" in pr["reasons"][0]
-                assert not any("заглуш" in x.lower() for x in pr["reasons"] + pr["notes"])
+                if rec["obs_status"] == "valid":
+                    assert pr["alert_level"] in ("GREEN", "RED")
+                    assert pr["pred_low_ug_l"] is not None and pr["pred_high_ug_l"] is not None
+                    assert any("graph_cli" in s for s in pr["sources"])
+                    assert pr["recommendations"] == []
+                    assert len(pr["reasons"]) == 1 and "Граф знаний (Часть 3" in pr["reasons"][0]
+                    assert not any("заглуш" in x.lower() for x in pr["reasons"] + pr["notes"])
+                else:
+                    assert pr["alert_level"] is None
+                    assert pr["recommendations"] == []
 
             hist = c.get("/history/batorino", params={"date": "2026-11-11", "limit": 24}).json()
             pt_last = next(p for p in hist["points"] if p["date"] == "2026-11-11")
